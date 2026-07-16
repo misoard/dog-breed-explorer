@@ -1,0 +1,140 @@
+[
+  {
+    "id": "1",
+    "name": "Affenpinscher",
+    "species_id": "2",
+    "life_span": "12-15",
+    "temperament": "Confident, alert, playful, loyal, courageous",
+    "origin": "Germany",
+    "country_codes": "DE",
+    "country_code": "DE",
+    "description": "Small, sturdy toy breed with a distinctive monkey-like expression and shaggy, wiry coat. Known for its confident, terrier-like personality despite its small size.",
+    "bred_for": null,
+    "perfect_for": null,
+    "breed_group": "Toy",
+    "history": "Originating in 17th-century Germany, bred down from larger terriers to be skilled ratters in homes, kitchens and stables. Refined in Munich and Berlin, recognized by AKC in 1936. Name translates to 'monkey-like terrier'.",
+    "reference_image_id": "0LJiOVlxp",
+    "weight": {
+      "imperial": "7-10",
+      "metric": "3.2-4.5"
+    },
+    "height": {
+      "imperial": "9-11.5",
+      "metric": "23-29"
+    },
+    "image": {
+      "id": "0LJiOVlxp",
+      "url": "https://cdn2.thedogapi.com/images/0LJiOVlxp.jpg",
+      "width": 2048,
+      "height": 1880
+    }
+  },
+  {
+    "id": "117",
+    "name": "German Spitz",
+    "species_id": "2",
+    "life_span": null,
+    "temperament": "Alert, intelligent, confident, lively, devoted",
+    "origin": "Germany",
+    "country_codes": "DE",
+    "country_code": "DE",
+    "description": "Compact, lively spitz-type dog with abundant double coat, fox-like expression, and characteristic plumed tail carried over the back. Available in multiple size varieties with alert, attentive demeanor.",
+    "bred_for": null,
+    "perfect_for": null,
+    "breed_group": "Non-Sporting",
+    "history": "Descended from ancient Stone Age 'Peat Dogs', considered the oldest dog breed in Central Europe. Developed in various sizes throughout Germany as vigilant farm watchdogs and companions, with FCI recognizing multiple size varieties sharing common ancestry.",
+    "reference_image_id": null,
+    "weight": {
+      "imperial": "Male: 8-26; Female: 8-24",
+      "metric": "Male: 3.6-12; Female: 3.6-11"
+    },
+    "height": {
+      "imperial": "9-15",
+      "metric": "23-38"
+    }
+  },
+  {
+    "id": "351",
+    "name": "Alopekis",
+    "species_id": "2",
+    "life_span": null,
+    "temperament": "Intelligent, alert, loyal, adaptable, energetic, playful",
+    "origin": "Greece",
+    "country_codes": "GR",
+    "country_code": "GR",
+    "description": "Small, fox-like Greek primitive landrace breed with wedge-shaped head and agile build, historically used as an all-purpose farm dog for companionship, watching, and vermin control",
+    "bred_for": null,
+    "perfect_for": null,
+    "breed_group": "Primitive",
+    "history": "Ancient Greek landrace breed with depictions found on ancient pottery, traditionally used as versatile farm companion for vermin control and watchdog duties. Kept for thousands of years in rural Greek communities, with current preservation and standardization efforts ongoing for official recognition.",
+    "reference_image_id": null,
+    "weight": {
+      "imperial": "7-15",
+      "metric": "3-7"
+    },
+    "height": {
+      "imperial": "8-12.5",
+      "metric": "20-32"
+    }
+  },
+  {
+    "id": "536",
+    "name": "Mongrel",
+    "species_id": "2",
+    "life_span": "10-16",
+    "temperament": "Variable depending on ancestry and individual traits",
+    "origin": "Worldwide",
+    "country_codes": "unknown",
+    "country_code": "unknown",
+    "description": "Mixed breed dog of unknown or varied ancestry, combining traits from multiple breeds. Physical characteristics, temperament, and health are highly variable and unpredictable, though often display hybrid vigor.",
+    "bred_for": null,
+    "perfect_for": null,
+    "breed_group": "Mixed",
+    "history": "Mixed breed dogs resulting from generations of natural or unintentional breeding between dogs of various ancestries. They have existed as long as domesticated dogs, predating modern purebred concepts, and are found worldwide though not recognized by kennel clubs.",
+    "reference_image_id": "rVXU1yHOSW",
+    "weight": {
+      "imperial": "unknown",
+      "metric": "unknown"
+    },
+    "height": {
+      "imperial": "unknown",
+      "metric": "unknown"
+    },
+    "image": {
+      "id": "rVXU1yHOSW",
+      "url": "https://cdn4.thedogapi.com/optimized/rVXU1yHOSW.jpg",
+      "width": 880,
+      "height": 1200
+    }
+  },
+  {
+    "id": "2",
+    "name": "Afghan Hound",
+    "species_id": "2",
+    "life_span": "12-15",
+    "temperament": "Independent, dignified, aloof, loyal, confident",
+    "origin": "Afghanistan",
+    "country_codes": "AF",
+    "country_code": "AF",
+    "description": "Ancient, elegant sighthound with dramatic, flowing silky coat and aristocratic bearing, bred for hunting large prey in mountainous terrain",
+    "bred_for": null,
+    "perfect_for": null,
+    "breed_group": "Hound",
+    "history": "Ancient sighthound originating in the mountainous regions of Afghanistan, where they were prized for hunting large prey like gazelles and leopards. Valued for their speed, stamina, and problem-solving intelligence over rugged terrain. Introduced to the Western world by British officers in the early 20th century.",
+    "reference_image_id": "tChrH8dDJ",
+    "weight": {
+      "imperial": "Male: 55-65; Female: 45-55",
+      "metric": "Male: 25-30; Female: 20-25"
+    },
+    "height": {
+      "imperial": "Male: 27-29; Female: 25-27",
+      "metric": "Male: 69-74; Female: 63-69"
+    },
+    "image": {
+      "id": "tChrH8dDJ",
+      "url": "https://cdn2.thedogapi.com/images/tChrH8dDJ.jpg",
+      "width": 2400,
+      "height": 2487
+    }
+  }
+]

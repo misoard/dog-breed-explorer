@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+exploration/raw_breeds.json
+__pycache__/
+*.pyc
+*.duckdb
+*.duckdb.wal
+
+# dbt
+target/
+dbt_packages/
+logs/
+
+.DS_Store
+.venv/

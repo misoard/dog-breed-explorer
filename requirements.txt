@@ -1,0 +1,17 @@
+# Pipeline runtime. Pinned on minor so CI and local agree.
+
+# M1 — ingestion
+requests~=2.32.3
+tenacity~=8.2.2
+python-dotenv~=1.0
+
+# Warehouse (also the dbt-duckdb backend)
+duckdb~=1.5.4
+
+# M2-M4 — transform / test / docs
+dbt-core~=1.9
+dbt-duckdb~=1.9
+
+# M6 — dashboard
+streamlit~=1.40
+pandas~=2.2
