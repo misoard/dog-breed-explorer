@@ -25,10 +25,87 @@ Business logic lives in dbt gold; the dashboard stays thin.
 | gold | `dim_breeds` | dbt | clean + derived (size_class, midpoints) |
 | gold | `breed_temperaments` | dbt | bridge, exposed for querying |
 | gold | `mart_size_class_summary` | dbt | grain: size_class — counts + mean life span (retires `mart_weight_distribution`) |
-| gold | `mart_size_vs_lifespan` | dbt | grain: breed — scatter-ready (incl. `height_mid_cm`) |
+| gold | `mart_size_vs_lifespan` | dbt | grain: breed — scatter-ready (weight + life span only) |
 | gold | `mart_metric_correlation` | dbt | grain: (metric_a, metric_b) — 3 rows + `n_breeds` |
-| gold | `mart_size_scaling_fit` | dbt | one row — isometry exponent k, computed at pipeline time |
+| gold | `mart_size_class_temperaments` | dbt | grain: (size_class, temperament) — count + % within class |
 | seed | `size_class_bands` | dbt seed | the ONLY home of the bucket boundaries |
+
+## Materialization & schemas
+
+| layer | schema | materialized | why |
+|---|---|---|---|
+| raw/bronze | `raw` | (ingestion, not dbt) | written by `ingest.py` |
+| staging/silver | `main_staging` | **view** | cheap, always consistent with raw; nothing reads it but marts |
+| marts/gold | `main_marts` | **table** | the dashboard reads these — materialize once at build, not per page load |
+| seed | `main` | table (dbt default) | seeds are tables by definition |
+
+Views for staging, tables for marts is the dbt convention, and it earns itself here: staging is a
+parse-and-type pass with exactly one consumer (marts), so a view costs nothing and can never be
+stale. Marts are read repeatedly by a dashboard, so they get built once — the read path never
+re-executes the parser. Set in `dbt_project.yml`, not per model:
+
+```yaml
+models:
+  dog_breed_explorer:
+    staging:
+      +materialized: view
+      +schema: staging      # -> main_staging
+    marts:
+      +materialized: table
+      +schema: marts        # -> main_marts
+```
+
+Note dbt **concatenates** custom schemas onto the target schema by default (`main` + `staging` =
+`main_staging`), which is why the config says `staging`, not `main_staging`.
+
+## dbt targets: **dev and prod, parameterized** (a scored requirement — build it)
+
+The brief scores "parameterize so it can run against both a dev and a prod target." This is the
+deliverable, stated concretely so it can't get lost: **one `profiles.yml`, two targets, identical
+model code**. The only difference between dev and prod is *which database file dbt writes to* —
+never the SQL. If a model ever needs to know its target, that's a smell.
+
+```yaml
+# dbt/profiles.yml
+dog_breed_explorer:
+  target: dev                     # dev is the default: an unqualified `dbt build` cannot
+  outputs:                        # touch the serving copy by accident
+    dev:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', '../dogs_dev.duckdb') }}"
+      threads: 4
+    prod:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', '../dogs.duckdb') }}"
+      threads: 4
+```
+
+| target | who runs it | database | lifetime |
+|---|---|---|---|
+| **dev** | me, iterating on models | `dogs_dev.duckdb` | scratch — delete it any time |
+| **prod** | the CI/scheduled workflow, **and** my local demo build | `dogs.duckdb` | discarded with the VM in CI; durable on my laptop, where the dashboard reads it |
+
+```bash
+# dev — iterate without touching the serving copy
+python ingestion/ingest.py --db dogs_dev.duckdb
+dbt build --target dev
+
+# prod — the CI workflow, and the local build the dashboard reads
+python ingestion/ingest.py --db dogs.duckdb
+dbt build --target prod
+```
+
+**`prod` means "the production-shaped build", not "the cloud."** Per DECISIONS.md §5, CI proves the
+pipeline and discards its warehouse; the laptop's prod build is what the dashboard reads. Same
+target, same code, two lifetimes.
+
+**The coupling to watch:** ingestion writes the file dbt then reads, so `ingest.py --db` and the dbt
+target must point at the **same file**. They are two separate programs agreeing on a path — the one
+genuinely fragile seam in this design. `DBT_DUCKDB_PATH` exists so CI can set both from one
+environment variable rather than repeating a literal path in two workflow steps.
+
+`profiles.yml` lives in the repo (committed — it holds no secrets, only paths). `DOG_API_KEY` is the
+only secret and never appears here.
 
 ## stg_breeds — target columns
 | Column | Type | Derivation |
@@ -155,6 +232,13 @@ artifact, not two breeds.
 9. custom `assert_unit_ratio_plausible`: on raw/staging, the median imperial:metric ratio must
    stay near 2.205 (weight) / 2.54 (height) — units are inferred, not declared, so this catches a
    silent source unit change. (Tolerance e.g. ±5%.)
+9b. `mart_size_class_temperaments`: `unique` on the combination **(size_class, temperament)** — the
+   grain; a duplicate would double-count a tag and inflate `pct_of_class`. `not_null` on all three
+   keys. `accepted_values` on `size_class` (same six labels). Plus custom
+   **`assert_pct_of_class_sane`**: `pct_of_class` must be `> 0` and `<= 100`, and `breed_count <=
+   breeds_in_class` — a tag cannot be held by more breeds than exist in the class. That inequality is
+   the load-bearing one: it's what fails if the join fans out, which is the realistic bug in a mart
+   built from a bridge.
 
 ### Severity: invariants ERROR, distributional guards WARN
 
@@ -196,49 +280,105 @@ on `size_class` is drift waiting to happen.
   counts all breeds in the class; `mean_life_span_years` averages only those with a life span
   (6.4% null), so **both denominators are exposed** rather than one being silently implied.
 - **`mart_size_vs_lifespan`** — grain: **breed** (one row per breed, ready to scatter).
-  `breed_id, breed_name, size_class, weight_mid_kg, height_mid_cm, life_span_mid_years`.
-  `height_mid_cm` is required by the height-vs-weight view and the scaling fit — it was missing.
+  `breed_id, breed_name, size_class, weight_mid_kg, life_span_mid_years`.
+  **No `height_mid_cm`** — its only consumers were the height-vs-weight view and the scaling fit,
+  both cut. Height remains a breed fact in `dim_breeds` and `mart_size_class_summary`; it just has
+  no reader here. A column with no consumer is a column that rots.
 - **`mart_metric_correlation`** — grain: **(metric_a, metric_b)**, 3 rows.
   `metric_a, metric_b, correlation, n_breeds`. Three lines of SQL (`corr(x, y)` is a DuckDB
   aggregate). The number quoted in the narrative is computed by dbt, tested and reproducible —
   not a `df.corr()` in the dashboard.
-- **`mart_size_scaling_fit`** — grain: **one row**.
-  `exponent_k, intercept_ln, r2_loglog, n_breeds`. The isometry fit (`weight ~ height^k`) computed
-  **at pipeline time**, exactly like the correlation: `regr_slope(ln(weight_mid_kg),
-  ln(height_mid_cm))`, plus `regr_intercept` and `regr_r2`. The dashboard reads `exponent_k` and
-  draws the curve; it never fits anything. Verified in DuckDB: **k = 2.07, R² = 0.864, n = 626.**
-- (optional) `mart_top_temperaments`: tag → breed count, from the bridge.
+- **`mart_size_class_temperaments`** — grain: **(size_class, temperament)**.
+  `size_class, temperament, breed_count, breeds_in_class, pct_of_class`.
+  For each size class, how often each temperament tag appears. "Characteristic" here means nothing
+  cleverer than **most frequent within the group** — a `GROUP BY size_class, temperament` with a
+  `COUNT`, joining two tables that already exist (`ref('breed_temperaments')` → `ref('dim_breeds')`).
+  **The one subtlety, and it's the reason `pct_of_class` exists:** raw counts favour big classes —
+  220 medium breeds will out-count 40 toy breeds on every tag, purely because there are more of
+  them. So the dashboard reads **`pct_of_class` = breed_count / breeds_in_class**, which makes
+  classes comparable ("72% of giant breeds are calm"). That is normalising **within** a group, not
+  computing association — no lift, no baseline, no leave-one-out. It stays on the *descriptive fact*
+  side of the line, which is exactly why it ships and `mart_temperament_pair_lift` doesn't.
+  Both `breed_count` and `breeds_in_class` are kept, so the denominator is visible rather than
+  implied — the same rule `mart_size_class_summary` follows.
+  **Top-N is presentation, not gold:** the mart holds every (class, tag) pair; the dashboard takes
+  the top 3–5. Bake the cut into the model and you can't change it without a rebuild.
+- (optional) `mart_top_temperaments`: tag → breed count, from the bridge. Largely subsumed by
+  `mart_size_class_temperaments` — only build it if an overall (non-size-split) tag ranking is
+  wanted.
 
-**Population convention for `mart_metric_correlation` and `mart_size_scaling_fit`: PAIRWISE.**
+**Cut: `mart_size_scaling_fit`** (was: isometry exponent `k`, `weight ~ height^k`, k=2.07/R²=0.864).
+A real finding, and the wrong deliverable: the brief asks for "a curated analytics layer exposing
+facts about dog breeds (life span, size class, temperament, and so on)", and a log-log regression
+exponent is data-science cleverness, not a fact about a dog. It goes in DECISIONS.md as an explored
+finding, not in gold. `mart_metric_correlation` **stays** — correlations with life span are the
+evidence for "size = weight" and are legible enough to show.
+
+**Population convention for `mart_metric_correlation`: PAIRWISE.**
 Each row uses every breed where *its own* two metrics are non-null — not only breeds with all three.
-This is why `n_breeds` is a column on both marts: **a correlation without its population is not a
-fact.** Pairwise vs listwise is not cosmetic — it moves the numbers:
+This is why `n_breeds` is a column: **a correlation without its population is not a fact.** Pairwise
+vs listwise is not cosmetic — it moves the numbers:
 
 | pair | pairwise (SPEC, n) | listwise n=586 |
 |---|---|---|
 | weight ↔ life span | **−0.671** (586) | −0.671 |
 | height ↔ life span | **−0.503** (586) | −0.503 |
 | height ↔ weight | **0.860** (626) | 0.851 |
-| scaling exponent k | **2.07** (626) | 2.03 |
 
-## Dashboard questions (CONFIRMED in M0.5 — answering 2 of the 4)
+## Dashboard questions (CONFIRMED in M0.5 — answering 3 of the 4)
 1. **How are breeds distributed across weight classes?** → count bars from
    `mart_size_class_summary`.
 2. **Is there a relationship between size and life span?** → mean-life-span line from
-   `mart_size_class_summary` + per-breed scatter from `mart_size_vs_lifespan`.
+   `mart_size_class_summary` + per-breed scatter from `mart_size_vs_lifespan`, with the
+   correlations from `mart_metric_correlation` as the stated evidence.
+3. **Which temperaments are characteristic of each size class?** → top 3–5 tags per class by
+   `pct_of_class` from `mart_size_class_temperaments`, as a horizontal bar or small table:
+   `Giant: calm 72% · protective 61% · loyal 55%` / `Toy: alert 68% · playful 63%`.
+   Narrative: *"temperament varies systematically with size — giant breeds skew calm and protective,
+   toy breeds alert and playful."* This is what puts **temperament** — one of the three fields the
+   brief names — on the dashboard as a headline fact rather than only a bridge table nobody looks at.
 
 **"Size" is defined as weight**, not height, and the correlation mart is the evidence: weight↔life
 −0.671 vs height↔life −0.503, and height↔weight 0.860 means height adds little once weight is in.
-Stated in DECISIONS.md §0.
+Stated in DECISIONS.md §0. The correlation numbers **render on the dashboard** (they're about life
+span, which is the question) — but as numbers, not as a fitted curve.
 
 **Chart rule: the two questions render as two charts stacked on a shared x-axis, NEVER one
 dual-axis plot.** Two y-scales align arbitrarily and fabricate a relationship. See DECISIONS.md §0.
 
-Supporting (same two questions, not a third): height-vs-weight with the `mart_size_scaling_fit`
-curve; the 3×3 matrix from `mart_metric_correlation`.
+**Cut from the dashboard:** the height-vs-weight scatter and its fitted isometry curve. See the
+`mart_size_scaling_fit` note above — a regression exponent is not a fact about a dog breed.
 
 ## LLM bonus (if fundamentals solid) — REVISED given profiling
 `bred_for` is empty, so derive instead: an **`energy_level`** (low/medium/high) or
 **`good_with_kids`** flag from `temperament_raw` + `description` + `breed_group`. Batch all 628 in
 one pass per run, cache by breed_id so unchanged breeds aren't re-called, and eval on a handful of
 hand-labelled breeds + a schema/enum validity check. Fold back as a real column in dim_breeds.
+
+### How enrichment joins the DAG — **Pattern A: enrich writes a table, dbt reads it**
+
+`enrich.py` reads `stg_breeds` from DuckDB, calls the LLM, and writes
+**`raw.breed_enrichment`** (keyed by `breed_id`). `dim_breeds` then joins it like any other input.
+The enrichment is not a special case — it's just another table dbt reads.
+
+```
+ingest.py  →  dbt build --select staging  →  enrich.py  →  dbt build --select marts
+   (E+L)              (T, silver)            (LLM, Python)        (T, gold)
+```
+
+Two dbt invocations with a Python step between them. The cost is stated plainly: **the pipeline is
+no longer one `dbt build`**, and the run script has to sequence four steps instead of two. That's
+the price of keeping the LLM call outside the warehouse, and it buys real separation — dbt never
+makes a network call, the enrichment is inspectable as a table before it reaches gold, and a failed
+LLM run leaves the previous enrichment in place instead of breaking the build.
+
+- **Declared as a `source()`**, not a `ref()` — dbt doesn't build it, Python does. It goes in
+  `_sources.yml` beside `raw.breeds`.
+- **LEFT JOIN in `dim_breeds`**, never inner: if enrichment hasn't run, or missed a breed, that
+  breed still appears with a NULL enrichment column. The bonus must not be able to drop breeds from
+  the core deliverable.
+- **Tests:** `accepted_values` on the enum (the LLM's output is untrusted input — this is the
+  schema/enum validity check), `relationships` back to `dim_breeds`, `unique` on `breed_id`.
+- **Alternative rejected:** a dbt Python model calling the LLM inside the build. It couples the
+  warehouse build to a network call with a rate limit and a bill, and makes `dbt build`
+  non-deterministic. Not worth it for a bonus.

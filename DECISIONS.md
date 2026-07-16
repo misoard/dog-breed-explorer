@@ -52,17 +52,45 @@ the honest framing is "descriptive of this dataset", not inferential.
   variance honestly; a bar chart alone would oversell −0.67. (I explored a per-band correlation
   matrix that made this precise, and dropped it — too much machinery for the point. The sentence
   survives; the table doesn't.)
-- **Height vs weight — the isometry break.** A genuine finding, cheap to show. Weight scales as
-  **height^2.07**, not the **height^3** that geometric similarity predicts (log-log fits better:
-  R² 0.86 vs 0.74 linear). Plain-language claim: **dog breeds get proportionally lighter as they get
-  taller** — tall breeds are built long and lean, not scaled-up small dogs. Charted as the scatter
-  plus a cube-law reference curve, so the divergence is visible rather than asserted.
+- **Top temperaments per size class, as a % of the class.** This is what makes **temperament** — one
+  of the three fields the brief names — a headline fact instead of a bridge table nobody opens.
+  `Giant: calm 72% · protective 61%` / `Toy: alert 68% · playful 63%`, and the narrative writes
+  itself: *temperament varies systematically with size.* One `GROUP BY size_class, temperament` over
+  two tables I already have.
+  - **Percentage, not raw count** — and that's the whole subtlety. Raw counts favour big classes:
+    220 medium breeds out-count 40 toy breeds on every tag purely by existing. Normalising *within*
+    the class makes them comparable. Note what this deliberately is **not**: no lift, no baseline, no
+    leave-one-out. Dividing by the group size is arithmetic; comparing against a baseline is
+    inference. That distinction is exactly the line between this mart and the pair-lift one below.
+  - **Top-N lives in the dashboard, not the mart.** Gold holds every (class, tag) pair; the read
+    layer takes the top 3–5. Bake the cut into gold and you can't change it without a rebuild.
 - **3×3 correlation matrix (weight / height / life span).** Enough on its own: weight~life **−0.67**,
   height~life **−0.503**, weight~height **0.860**. It justifies a modeling choice in one glance —
   **weight is the better size proxy**: it predicts life span more strongly, and because weight and
   height are 0.860-coupled, height adds little once weight is in. Height's −0.503 is largely borrowed
   from weight. (The case asks about "size" without defining it; this is where I define it as weight,
   and why.)
+
+### Explored, deliberately NOT shipped: the isometry break (height vs weight)
+
+**A genuine finding, cut from the delivery.** Weight scales as **height^2.07**, not the **height^3**
+geometric similarity predicts (log-log fits better: R² 0.86 vs 0.74 linear) — **dog breeds get
+proportionally lighter as they get taller**; tall breeds are built long and lean, not scaled-up
+small dogs. It was specified as a gold mart (`mart_size_scaling_fit`) and a dashboard curve, and
+**removed before either was built**.
+
+**Why it's out:** the brief asks for "a curated analytics layer exposing facts about dog breeds
+(life span, size class, temperament, and so on)". An isometry exponent is not a fact about a dog —
+it's an inference about allometry, answering a question nobody asked, in a language the audience
+doesn't speak. It was the most intellectually satisfying thing in the data, which is precisely the
+reason to be suspicious of it: I'd have been building it because *I* found it interesting.
+
+**The rule it establishes, applied consistently:** **descriptive fact → gold; inferential cleverness
+→ DECISIONS.md.** `mart_size_class_temperaments` (count, normalised within a group) is on the ships
+side. This and the pair-lift below are not. `mart_metric_correlation` **stays** — its rows are about
+life span, which is the actual question, and a correlation is legible where a fitted exponent isn't.
+
+Cost of removing it: none. It costs one paragraph here and no build, no tests, no maintenance.
 
 ### Explored, deliberately NOT shipped: trait-pair lift by size band
 
@@ -151,14 +179,77 @@ surfaced the missing-unit risk.
 
 ---
 
-## 1. Extraction & ingestion — **[TOOL: dlt / hand-rolled Python + requests]**
+## 1. Extraction & ingestion — **hand-rolled Python + `requests` + `tenacity`**
 
-- **Chose:** _[state the tool]_
-- **Why:** _[idempotency handling, raw payload preserved untouched, partitioning by run date]_
-- **Idempotency approach:** _[full-refresh replace vs upsert on breed_id — and why full-refresh is defensible for a tiny static set]_
-- **Failure handling:** _[retry with backoff on transient API errors; validate completeness before promoting; on failure, fail loudly and DO NOT overwrite last-good curated data]_
-- **Traded off:** _[e.g. chose simplicity over incremental-load machinery the data doesn't need]_
-- **With more time:** _[change-detection via row hashing; a proper run-metadata/audit table]_
+- **Chose:** `ingestion/ingest.py` — `requests` for one GET, `tenacity` for retry/backoff, DuckDB's
+  Python API for the write. No `dlt`.
+- **Why not `dlt`:** dlt earns its keep on many sources, schema evolution, and incremental state.
+  This is *one* endpoint returning *one* JSON array. dlt would add a dependency and a layer of
+  its own abstractions between me and the two properties that actually matter here (idempotency,
+  partial-failure safety) — and I'd be explaining dlt's semantics in the debrief instead of my own.
+  ~90 lines of explicit Python is the right size. If a second and third source appeared, dlt starts
+  winning.
+- **Raw is untouched:** each breed lands as verbatim JSON in `raw.breeds.payload`. No parsing, no
+  casting, no cleaning — that is dbt's job. If the parser turns out to be wrong, raw is still the
+  truth and we rebuild without re-fetching. `breed_id` is lifted out beside the payload as the
+  partition key (so idempotency is expressible in SQL); it's a key, not an interpretation.
+  Note the API returns `id` as a **string** (`"id":"1"`) — another reason raw stays verbatim and
+  the INTEGER cast is a staging decision.
+
+### Stateless: every run re-fetches and rebuilds. **The API is the source of truth.**
+
+- **Chose:** the pipeline holds **no state between runs**. Each run fetches the full breed list and
+  rebuilds silver/gold from scratch. A fresh, empty warehouse is a supported starting point, not a
+  failure — which is exactly what GitHub Actions hands us, since every run gets a new VM and
+  `dogs.duckdb` does not survive it.
+- **Why (and this reverses an earlier decision):** I first designed raw to **accumulate** one
+  628-row partition per `run_date`, to keep a history of long-term change. Then the CI question
+  exposed what that actually costs: to keep that history I'd have to bolt persistence onto the
+  pipeline (MotherDuck, S3, an Actions cache) purely to protect it. On a source this static the
+  history was near-worthless anyway — I'd be storing 628 identical rows a day to record that nothing
+  had changed. Dropping the requirement removes the persistence problem instead of solving it.
+  Stateless is simpler, more robust, and has **no drift failure mode**: there is no stale state that
+  can silently disagree with the API.
+- **`run_date` still partitions raw** — the case study explicitly asks for partitioning by run date,
+  it costs nothing, and it is the mechanism that makes the write idempotent: DELETE+INSERT of the
+  day's partition, so a re-run replaces rather than appends. In CI exactly one partition ever
+  exists. Locally, where the file *does* persist, partitions accumulate as a **side effect** — not a
+  designed feature — which is why **`stg_breeds` still filters to the latest `run_date`**
+  (`where run_date = (select max(run_date) from raw.breeds)`). One line, and it makes a local run
+  behave exactly like CI instead of double-counting on day two.
+- **The cost, stated honestly:** with no prior partition, the completeness check has no last-good
+  count to compare against and falls back to the **fixed 628 baseline** from M0 profiling. It still
+  catches a truncated pull (<565), but the floor no longer tracks reality: if the API grew to 700
+  breeds, CI would keep measuring against 628 until I bumped the constant. A persistent warehouse is
+  what makes that floor self-updating — this is the concrete thing statelessness costs.
+- **With more time / if change-history were a requirement:** durable storage — **MotherDuck** (hosted
+  DuckDB the dashboard connects to directly) or a `.duckdb`/Parquet file in **S3/GCS** — plus an
+  **SCD-2 / dbt snapshot** so a row is appended only when a breed actually *changes*, rather than a
+  full daily copy of an unchanged table. That is the scale answer. It is not this POC's answer, and
+  the difference is the whole point: I'd add it when someone can name a question that needs
+  "what did this breed look like last month?", not before.
+
+### Failure handling: nothing is promoted until it's proven
+
+- **Retry only what a retry can fix:** backoff (exponential, 2→30s, 5 attempts) on timeouts,
+  connection errors, 429 and 5xx. A **403 fails immediately** — retrying a bad key five times just
+  delays the real error message.
+- **Validate before touching the warehouse:** structure (is it a breeds array?), the PK claim (`id`
+  present, non-null, unique — the assumption SPEC.md rests on), then completeness.
+- **Completeness is a tolerance, not equality:** a run must return ≥ **90%** of a reference count —
+  the **last-good partition** when one exists (a persisted local run), otherwise the **M0 baseline of
+  628**, which is the branch stateless CI always takes. Today's own partition is excluded from the
+  reference, or a re-run would compare the fetch against itself and validate nothing. Equality would
+  be wrong: **629 breeds is real data, not an error**. A truncated 300-breed pull is what this
+  catches. Drift *within* the band is surfaced by the **warn**-severity row-count test in dbt (§3),
+  not by failing the job — legitimate growth must not auto-fail the build.
+- **Atomic promote:** `DELETE` the partition + `INSERT` inside one transaction, so a crash mid-write
+  rolls back to the previous partition instead of leaving a half-written day. Verified end-to-end:
+  a bad key, a missing key, and a truncated payload all exit 1 with `raw.breeds` still holding 628.
+- **The key is never logged** — it exists only in the `x-api-key` header. Local: gitignored `.env`.
+  CI: a GitHub Actions secret, or the cron 403s.
+- **With more time:** change-detection via row hashing (the SCD-2 point above), and a proper
+  `raw.ingestion_runs` audit table (run id, status, row count, duration) instead of stdout logs.
 
 ## 2. Database / warehouse — **DuckDB**
 
@@ -190,8 +281,8 @@ surfaced the missing-unit risk.
   | `breed_temperaments` | (breed_id, temperament) | tag frequency; the queryable temperament list |
   | `mart_size_class_summary` | size_class | the count bars + mean-life-span line + the table |
   | `mart_size_vs_lifespan` | breed | the per-breed scatters |
-  | `mart_metric_correlation` | (metric_a, metric_b) | the 3×3 correlation matrix |
-  | `mart_size_scaling_fit` | one row | the isometry exponent + its curve |
+  | `mart_metric_correlation` | (metric_a, metric_b) | the correlation numbers + the size=weight evidence |
+  | `mart_size_class_temperaments` | (size_class, temperament) | top tags per size class, as % of class |
 
   `dim_breeds` carries `weight_min_kg` / `weight_max_kg` / `weight_mid_kg` (same shape for height and
   life span) plus `size_class` — min/max/mid as separate typed columns so the midpoint rule is
@@ -199,14 +290,29 @@ surfaced the missing-unit risk.
   what was `mart_weight_distribution`**: one mart per grain, since two marts keyed on `size_class`
   is drift waiting to happen.
 
-  **Fits and correlations are computed by dbt at pipeline time, never in the dashboard.** Both are
-  plain SQL aggregates (`corr(x, y)`; `regr_slope(ln(weight), ln(height))`), so the numbers quoted in
-  the narrative are built, tested and reproducible rather than recomputed live by the read layer —
-  the same "logic lives in gold" line I draw everywhere else. Each carries **`n_breeds`**, because a
-  correlation without its population is not a fact — and the population choice moves the number:
-  **pairwise** (each pair uses its own non-null rows) gives height↔weight **0.860 / k=2.07** on 626
-  breeds, where **listwise** (breeds with all three metrics) gives **0.851 / k=2.03** on 586. SPEC
-  fixes pairwise; the earlier figures in this file were listwise, from the pandas explorer.
+  **Correlations are computed by dbt at pipeline time, never in the dashboard.** `corr(x, y)` is a
+  plain SQL aggregate, so the numbers quoted in the narrative are built, tested and reproducible
+  rather than recomputed live by the read layer — the same "logic lives in gold" line I draw
+  everywhere else. It carries **`n_breeds`**, because a correlation without its population is not a
+  fact — and the population choice moves the number: **pairwise** (each pair uses its own non-null
+  rows) gives height↔weight **0.860** on 626 breeds, where **listwise** (breeds with all three
+  metrics) gives **0.851** on 586. SPEC fixes pairwise; the earlier figures in this file were
+  listwise, from the pandas explorer.
+
+  **Cut before building: `mart_size_scaling_fit`** (the isometry fit, `weight ~ height^k`, k=2.07,
+  R²=0.864) **and the height-vs-weight curve it fed.** The brief asks for "a curated analytics layer
+  exposing facts about dog breeds (**life span, size class, temperament**, and so on)". A log-log
+  regression exponent is a nice data-science finding and *not* a fact about a dog — it answers a
+  question nobody asked, in a language the audience doesn't speak. It survives here as a recorded
+  finding (§0) and nowhere else. **`mart_metric_correlation` stays and ships**: its rows are about
+  life span, which *is* the question, and a correlation coefficient is legible in a way a fitted
+  exponent isn't. The line I'm drawing: **descriptive fact = gold; inferential cleverness =
+  DECISIONS.md.** `mart_size_class_temperaments` is on the ships side of that same line, and
+  `mart_temperament_pair_lift` (below) is not — which is the consistency check on the rule.
+
+  **Consequence:** `height_mid_cm` leaves `mart_size_vs_lifespan` — the fit and the height-vs-weight
+  view were its only readers. Height stays a breed fact in `dim_breeds` and as `mean_height_cm` in
+  `mart_size_class_summary`; it just stops being carried where nothing reads it.
 - **Messy-field handling:**
   - `life_span` "12-15" (no "years" suffix; 6.4% null) → `life_span_min_years`, `life_span_max_years`, midpoint
   - `weight`/`height` `.metric` → `weight_min_kg`, `weight_max_kg` (+ height) — see units note below
@@ -303,9 +409,35 @@ surfaced the missing-unit risk.
 
 - **Chose:** GitHub Actions.
 - **Why:** tests + `dbt build` run on every PR (visible green/red status); a scheduled run on a
-  daily cron deploys/refreshes on merge to main.
-- **Traded off:** _[Actions over a managed orchestrator — see layer 6]_
-- **With more time:** _[artifact upload of dbt docs; Slack/email alert on failed run]_
+  daily cron proves the pipeline still works end to end against the live API.
+
+### CI **proves the pipeline; it does not serve it.** The demo runs locally.
+
+- **Chose:** producer and consumer both live on my laptop. The pipeline runs locally
+  (`ingest.py` → `dbt build --target prod` → `dogs.duckdb`), the Streamlit dashboard reads that
+  local file, and I demo it live. GitHub Actions' only job is to answer **"does this code still
+  work?"** — it ingests, builds gold, runs the tests, goes green, and then **throws its warehouse
+  away**, because serving was never its job.
+- **Why:** this makes the handoff problem vanish rather than solving it. The problem only bites if
+  you insist the *cloud* run is the thing that serves the dashboard — then its output dying with the
+  VM matters, and you need MotherDuck/S3/artifacts to rescue it. But the brief says a **POC is
+  enough** and the demo is live. On my laptop, the data survives. So the honest, simplest resolution
+  is to keep both ends somewhere durable — which the laptop already is — and let CI do the one thing
+  CI is actually good at: telling me the pipeline is healthy.
+- **Stated as a choice, not an oversight.** The output of the scheduled run being discarded is
+  deliberate: it is a **health check with a real API call attached**, not a deployment. Cron at
+  02:00 UTC still earns its place — it catches the API changing shape, the key expiring, or a test
+  starting to fail, on a day when nobody is looking. That is a genuine freshness signal even though
+  nothing is published.
+- **Follows from statelessness (§1):** since every run rebuilds from the API anyway, a run's
+  warehouse has no unique value worth persisting. The two decisions are the same idea applied twice.
+- **Traded off:** there is no public/hosted dashboard URL, and "daily freshness" is proven rather
+  than served. If the explorer had real users, this is exactly the line I'd cross: the cron would
+  publish to durable storage and the dashboard would read that.
+- **With more time:** publish the `.duckdb` as a Release asset or push to **MotherDuck**, and point
+  a hosted Streamlit at it — that turns the same pipeline into a serving one, with no model changes.
+  Also: dbt docs uploaded as an artifact, and an alert on a failed scheduled run (a red cron nobody
+  sees is a cron that isn't running).
 
 ## 6. Orchestration & scheduling — **GitHub Actions cron (NOT Airflow)**
 
@@ -328,16 +460,36 @@ surfaced the missing-unit risk.
 - **Narrative:** the README says **what the data says** (e.g. "smaller breeds tend to live
   longer"), not just what the charts show.
 - **Thin by design:** reads the gold marts, minimal presentation logic only.
-- **With more time:** _[hosted deploy on Streamlit Cloud; more questions; interactivity]_
+- **Reads the local `dogs.duckdb` (the prod target), demoed live** — not a hosted deploy. CI proves
+  the pipeline; the laptop serves it. The reasoning is in §5, and it's a deliberate POC scope call.
+- **With more time:** _[hosted deploy on Streamlit Cloud reading MotherDuck; more questions;
+  interactivity]_
 
 ## Bonus — LLM enrichment **[if fundamentals are solid first]**
 
-- **Feature:** turn free-text `temperament` / `bred_for` into a structured column
+- **Feature:** turn free-text `temperament` + `description` into a structured column
   (`energy_level` score or `good_with_kids` flag), folded back into the dbt model as a real column.
-- **Engineering treatment (not magic):** where it sits in the pipeline _[enrichment step between
-  raw and staging / a separate model]_, how it's prompted, **cost & latency** _[batch all breeds
-  once per run; ~N tokens; cache so unchanged breeds aren't re-called]_, and a **light output
-  eval** _[schema-valid, value in expected range, spot-check against a few hand-labels]_.
+  **Not `bred_for` — profiling found it 100% null**, which is why the original framing of this bonus
+  had to change.
+- **Where it sits — Pattern A: `enrich.py` writes a table, dbt reads it.** It reads `stg_breeds`,
+  calls the LLM, and writes `raw.breed_enrichment` (keyed by `breed_id`). `dim_breeds` joins it as
+  just another input, declared via `source()` (dbt doesn't build it — Python does).
+  Pipeline order: **ingest → `dbt build` staging → `enrich.py` → `dbt build` marts.**
+- **Why Pattern A:** the LLM call stays *outside* the warehouse build. dbt never makes a network
+  call, so `dbt build` stays deterministic and offline-reproducible; the enrichment is inspectable
+  as a table before it reaches gold; and a failed LLM run leaves the previous enrichment in place
+  rather than breaking the build. The enrichment is not a special case — it's another table dbt joins.
+- **Traded off, stated plainly:** the pipeline is **no longer one `dbt build`** — the runner
+  sequences four steps instead of two, and there's a Python step wedged between two dbt invocations.
+  That's the price of the separation, and it's worth it: the alternative (a dbt Python model calling
+  the LLM mid-build) couples the warehouse build to a rate limit, a bill, and a non-deterministic
+  output. Not something to accept for a bonus.
+- **LEFT JOIN, never inner.** If enrichment hasn't run, or missed a breed, that breed still appears
+  with a NULL column. A bonus must never be able to drop breeds from the core deliverable.
+- **Engineering treatment (not magic):** batch all 628 in one pass per run; **cache by `breed_id`**
+  so unchanged breeds aren't re-called; record cost & latency; and a **light eval** — `accepted_values`
+  on the enum (the LLM's output is untrusted input, so it gets schema-tested like any other source),
+  plus a spot-check against a handful of hand-labels.
 - **Why this over a flashier bonus:** a small evaluated feature beats a large eyeballed one — and
   it plays to my applied-LLM background (same unstructured→structured pattern as my other work).
 

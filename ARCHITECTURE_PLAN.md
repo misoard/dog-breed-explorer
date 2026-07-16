@@ -54,7 +54,7 @@ dog-breed-explorer/
 │  ├─ profile_breeds.py          # M0: profiling script
 │  ├─ PROFILE_REPORT.md          # M0: the findings (done)
 │  ├─ explore_app.py             # M0.5: throwaway Streamlit explorer (rough-parse + eyeball)
-│  ├─ raw_breeds.json            # saved payload (dev fixture)
+│  ├─ raw_breeds.json            # saved payload — GITIGNORED (regenerable source data, not code)
 │  └─ sample_breeds.json         # a few representative records
 │
 ├─ ingestion/
@@ -62,23 +62,37 @@ dog-breed-explorer/
 │
 ├─ dbt/                          # the dbt project (M2–M4)
 │  ├─ dbt_project.yml
-│  ├─ profiles.yml               # dev + prod DuckDB targets (parameterized)
+│  ├─ profiles.yml               # dev + prod DuckDB targets (parameterized) — built in M2
+│  ├─ seeds/
+│  │  └─ size_class_bands.csv    # the ONLY home of the 5/12/25/45 boundaries (SPEC)
 │  ├─ models/
 │  │  ├─ staging/
 │  │  │  ├─ _sources.yml         # declares raw.breeds as a dbt source
 │  │  │  ├─ _staging.yml         # tests + docs for staging
-│  │  │  ├─ stg_breeds.sql       # parse life_span/weight/height, sentinels→null, type, dedupe
+│  │  │  ├─ stg_breeds.sql       # latest run_date only; parse life_span/weight/height,
+│  │  │  │                       #   sentinels→null, type, dedupe
 │  │  │  └─ stg_breed_temperaments.sql  # split + normalise (lowercase) tags
 │  │  └─ marts/
 │  │     ├─ _marts.yml           # tests + docs for marts
 │  │     ├─ dim_breeds.sql       # clean + derived (size_class, midpoints, life_span_range)
 │  │     ├─ breed_temperaments.sql       # bridge (breed_id, normalised tag)
-│  │     ├─ mart_size_class_summary.sql # grain: size_class — counts + mean life span
-│  │     └─ mart_size_vs_lifespan.sql    # pre-agg for dashboard Q
+│  │     ├─ mart_size_class_summary.sql  # grain: size_class — counts + mean life span
+│  │     ├─ mart_size_vs_lifespan.sql    # grain: breed — scatter-ready (no height: no reader)
+│  │     ├─ mart_metric_correlation.sql  # grain: (metric_a, metric_b) — 3 rows + n_breeds
+│  │     └─ mart_size_class_temperaments.sql  # grain: (size_class, tag) — count + % of class
+│  │                                     # (mart_size_scaling_fit CUT — an isometry exponent is
+│  │                                     #  not a "fact about dog breeds"; see DECISIONS.md §0)
 │  └─ tests/                     # custom SQL tests (return rows = fail)
-│     ├─ assert_lifespan_min_le_max.sql
-│     ├─ assert_weight_min_le_max.sql
-│     └─ assert_no_unknown_sentinel.sql
+│     ├─ assert_weight_min_le_max.sql        # error — invariants
+│     ├─ assert_lifespan_min_le_max.sql      # error
+│     ├─ assert_no_unknown_sentinel.sql      # error — guards FUTURE runs
+│     ├─ assert_size_class_bands_cover.sql   # error — seed contiguous, no gaps/overlaps
+│     ├─ assert_no_breed_unbanded.sql        # error — a real weight always finds a band
+│     ├─ assert_unit_ratio_plausible.sql     # error — units inferred, not declared
+│     ├─ assert_tag_not_freetext.sql         # warn  — sentence-as-tag
+│     ├─ assert_unknown_bucket_small.sql     # warn  — distributional guards (M4)
+│     ├─ assert_row_count_stable.sql         # warn
+│     └─ assert_lifespan_null_rate_stable.sql # warn
 │
 ├─ dashboard/
 │  └─ app.py                     # M6: Streamlit; reads gold marts; renders 2+ questions (thin)
@@ -91,8 +105,9 @@ dog-breed-explorer/
       ├─ ci.yml                  # on PR: install, dbt build, dbt test (visible status/badge)
       └─ scheduled.yml           # cron 02:00 UTC: ingest -> dbt build
 
-Committed for transparency: exploration/ (shows I profiled first). Gitignored: .env, the
-.duckdb file, dbt target/. Schema details live in SPEC.md; reasoning in DECISIONS.md.
+Committed for transparency: exploration/ code + reports (shows I profiled first). Gitignored: .env,
+the .duckdb file, dbt target/, and exploration/raw_breeds.json (source data, regenerable by running
+the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 ```
 
 ## The messy fields (where 25% of the score lives — do these carefully)
@@ -133,54 +148,124 @@ Committed for transparency: exploration/ (shows I profiled first). Gitignored: .
 - [ ] **Confirm/adjust the size_class bucket boundaries in SPEC.md** against the real weight
       distribution (drag them in the explorer, read the quantiles). Record final boundaries +
       reasoning in DECISIONS.md.
-- [ ] Throwaway — NOT the production dashboard (M6, which reads the dbt gold marts). Screenshot
-      anything useful into DECISIONS.md, then delete the app. Half a day max; if I'm styling, stop.
+- [x] **KEPT, not deleted** (supersedes the original "delete the app" line, which contradicted
+      CLAUDE.md's "keep `exploration/` committed"). It stays in `exploration/` as evidence I profiled
+      and looked before designing — the M0.5 findings are what froze the buckets and picked the two
+      questions. It is still **throwaway in status**: NOT the production dashboard (M6 reads the dbt
+      gold marts), never wired into the pipeline, and its rough in-app parse is not the real parser.
 
 **M1 — Ingestion (Day 2)**
-- [ ] Fetch all breeds, retry+backoff, land RAW into DuckDB partitioned by run_date, payload untouched.
-- [ ] Idempotent: re-running yields same row count (no duplicates). Validate completeness before promote.
-- [ ] Commit: "feat: idempotent ingestion of Dog API into raw layer".
+- [x] **DONE** — `ingestion/ingest.py`: fetch all breeds, retry+backoff, land RAW into DuckDB
+      partitioned by run_date, payload untouched (verbatim JSON).
+- [x] **DONE** — Idempotent per run_date: re-running replaces that day's partition → 628 rows, no
+      duplicates. Completeness validated (≥90% of last-good partition) before promote; a truncated
+      pull, a bad key and a missing key all exit 1 leaving last-good data intact.
+- [x] **DONE** — **stateless**: no state between runs; each run re-fetches and rebuilds, so CI's
+      empty VM is a supported start. run_date still partitions raw (idempotency + the case study
+      asks for it). Locally partitions accumulate as a side effect, so **`stg_breeds` must filter to
+      the latest run_date** — M2's first obligation. Reverses the earlier accumulate-history
+      design; rationale + what I'd do with durable storage in DECISIONS.md §1.
+- [x] **RESOLVED — CI proves, laptop serves.** Statelessness settled *history*; *handoff* is settled
+      by scope: the pipeline runs locally and the dashboard reads the local `dogs.duckdb`, demoed
+      live. GitHub Actions only answers "does the code still work?" and discards its warehouse. The
+      handoff problem disappears because producer and consumer are both on durable hardware.
+      Deliberate POC scope, not an oversight — DECISIONS.md §5.
+- [x] Commit: "feat: idempotent ingestion of Dog API into raw layer".
 
 **M2 — dbt staging/silver (Day 3 am)** — build to SPEC.md
-- [ ] `_sources.yml` → raw.breeds. `stg_breeds.sql`: the metric range parser (handles simple
+- [ ] **Scaffold + the dev/prod targets** (`dbt_project.yml`, `profiles.yml`). Not optional and not
+      deferrable to M5: `dbt build` resolves a profile before it compiles anything, so the two
+      targets exist from dbt's first run. **dev is the default** (`dogs_dev.duckdb`), prod is
+      `dogs.duckdb`. M5 doesn't create the split — it only picks `--target prod`. Schema + the
+      ingest.py/dbt shared-path seam are in SPEC.md ("dbt targets"). *(Scored: "parameterize so it
+      can run against both a dev and a prod target" — it was in the folder tree but no milestone
+      owned it.)*
+- [ ] `_sources.yml` → raw.breeds (**and `stg_breeds` filters to the latest `run_date`** — see
+      CLAUDE.md/DECISIONS.md §1; without it, a second local run double-counts every breed).
+- [ ] `stg_breeds.sql`: the metric range parser (handles simple
       `X-Y`, sex-specific `Male:…;Female:…`, and `'unknown'`→NULL), type everything, drop dead
       fields (species_id, bred_for, perfect_for, country_codes), **dedupe the Caucasian Shepherd**.
 - [ ] `stg_breed_temperaments.sql`: split comma list, **lowercase+trim** each tag (casing fix).
 - [ ] Commit per meaningful step. This is the hardest piece — understand the parser line by line.
 
-**M3 — dbt marts/gold (Day 3 pm)** — build to SPEC.md
+> **The TDD loop runs INSIDE M2 and M3 — one model + its tests is one unit of work.** For each
+> model: declare its tests first → stub the model → watch real assertions fail → fix → `dbt build`
+> until green → commit → next model. Do NOT build M2+M3 and test at M4; a contract written after
+> the model is a description, not a contract. This aligns the plan with CLAUDE.md ("declare
+> before/with the models"), which M4 previously contradicted.
+>
+> **Honest mechanics (don't overclaim red-green):** `dbt test` on a model that doesn't exist yet
+> *errors* ("model not found") rather than failing an assertion — so the loop is **contract-first,
+> then iterate to green**, with a stub producing the first genuine red. That is TDD in spirit, and
+> defensible; claiming a textbook red-green cycle for dbt is not.
+>
+> Per-model invariants interleave here. The three **distributional guards stay in M4** — they
+> describe the finished pipeline ("628 ±5%") and can't be asserted against a half-built DAG.
+
+**M3 — dbt marts/gold (Day 3 pm)** — build to SPEC.md · same interleaved test loop as M2
+- [ ] The `size_class_bands` **seed first** — `dim_breeds` joins it, so it exists before the model
+      that needs it. Boundaries live ONLY there. Tests: `assert_size_class_bands_cover` (contiguous,
+      no gaps/overlaps).
 - [ ] `dim_breeds` (clean typed + derived: weight_mid_kg, size_class, life_span_range).
-- [ ] `breed_temperaments` bridge (normalised tag).
+      Tests with it: unique+not_null(breed_id), accepted_values(size_class incl. 'unknown'),
+      `assert_no_breed_unbanded`, weight_mid range check.
+- [ ] `breed_temperaments` bridge (normalised tag). Tests with it: relationships → dim_breeds,
+      **unique on (breed_id, temperament)** (load-bearing — a dup tag double-counts every
+      aggregate), `assert_tag_not_freetext` (warn).
 - [ ] The marts for the chosen questions (names canonical in SPEC.md): `mart_size_class_summary`
-      (size_class grain), `mart_size_vs_lifespan` (breed grain), `mart_metric_correlation`,
-      `mart_size_scaling_fit`. Plus the `size_class_bands` seed — boundaries live ONLY there.
-      (Add `mart_top_temperaments` only if that's a chosen 3rd question.)
+      (size_class grain), `mart_size_vs_lifespan` (breed grain — **no `height_mid_cm`**, its only
+      readers were cut), `mart_metric_correlation` (**pairwise** population, carries `n_breeds`).
+- [ ] `mart_size_class_temperaments` — grain (size_class, temperament); `GROUP BY` + `COUNT` over
+      `ref('breed_temperaments')` × `ref('dim_breeds')`, plus **`pct_of_class`** (count / breeds in
+      class) so big classes don't win on raw counts alone. Top-N stays in the dashboard, not gold.
+      Tests with it: unique(size_class, temperament), `assert_pct_of_class_sane`
+      (`breed_count <= breeds_in_class`, pct in (0,100]) — the inequality is what catches a
+      fan-out in the bridge join.
+- [ ] **CUT: `mart_size_scaling_fit`** and the height-vs-weight curve. An isometry exponent is not a
+      fact about a dog breed — the rule is *descriptive fact → gold, inferential cleverness →
+      DECISIONS.md §0*. Don't rebuild it.
 - [ ] Business logic lives HERE, not in the dashboard.
 
-**M4 — Tests + docs (Day 3 pm)**  ← the TDD loop lives here (declare tests as the contract FIRST)
-- [ ] **Hard invariants (`severity: error`)** per SPEC.md: unique+not_null(breed_id);
-      accepted_values(size_class incl. 'unknown'); custom weight_min<=max; custom lifespan_min<=max;
-      **custom no-'unknown'-sentinel** (guards future runs); range check on weight_mid;
-      relationships + unique(breed_id, temperament) on the bridge; unit-ratio plausible; seed bands
-      contiguous.
+**M4 — Pipeline-level guards + docs (Day 3 pm)**
+> **The per-model TDD loop already ran in M2/M3** — the hard invariants were declared *with* their
+> models and are green before M4 starts. What's left here is only what could NOT interleave: guards
+> that describe the *finished* pipeline, and the docs that need the whole DAG to exist.
 - [ ] **Distributional guards (`severity: warn`)** — three, no more: `unknown` bucket ≤1% (now
       0.3%); row count 628 ±5%; life-span null rate ≤10% (now 6.4%). Rationale in DECISIONS.md §3:
       invariants error, anomalies warn — data can degrade without breaking any invariant, and
       legitimate drift shouldn't auto-fail the build.
+- [ ] Verify the M2/M3 invariants are complete against SPEC's list (nothing silently skipped).
 - [ ] `dbt docs generate` → capture the lineage graph for the debrief.
 
 **M5 — CI/CD + schedule (Day 4 am)**
-- [ ] GitHub Actions: on PR → install + `dbt build` + tests (visible status/badge).
-- [ ] On merge → scheduled cron @ 02:00 UTC runs the full pipeline. Secrets in Actions.
+- [ ] GitHub Actions: on PR → install + `dbt build` + tests (visible status/badge). Runs
+      **`--target prod`**; `DBT_DUCKDB_PATH` sets ingest.py's `--db` and the dbt target from ONE
+      env var (they must agree on a path — SPEC "dbt targets").
+- [ ] Cron @ 02:00 UTC: ingest → `dbt build --target prod` → tests → **discard the warehouse**.
+      **CI proves the pipeline; it does not serve it** (DECISIONS.md §5) — the run is a health check
+      with a real API call attached, which is what catches the API changing shape or the key
+      expiring. Not a deployment; say so out loud rather than letting it look like an oversight.
+- [ ] **`DOG_API_KEY` as an Actions secret** — the cron 403s without it. Nothing else is secret.
 
 **M6 — Dashboard + narrative (Day 4 pm)**
-- [ ] Streamlit reads gold marts, answers ≥2 questions. Thin.
+- [ ] Streamlit reads the gold marts from the **local `dogs.duckdb`** (the prod target build) and is
+      demoed live — not hosted. Thin: no logic, no parsing, no `pd.cut`. Answers ≥2 questions.
 - [ ] README narrative: what the data SAYS. Export PDF/screenshots.
 
 **M7 — LLM bonus (Day 4 pm, only if M0–M6 solid)**
 - [ ] Enrichment from **temperament + description** (NOT bred_for — it's 100% null per profiling)
       → energy_level or good_with_kids column, folded into dim_breeds.
-- [ ] Batch all 628 in one pass, cache by breed_id, prompt + cost/latency note + light eval.
+- [ ] **Pattern A — enrich.py writes a table, dbt reads it.** `enrich.py` reads `stg_breeds`, calls
+      the LLM, writes `raw.breed_enrichment` (keyed by breed_id). `dim_breeds` joins it via
+      `source()` — dbt doesn't build it, Python does. New pipeline order:
+      **ingest → `dbt build` staging → `enrich.py` → `dbt build` marts** (two dbt invocations with a
+      Python step between). Cost: the pipeline is no longer one `dbt build`. Benefit: dbt never makes
+      a network call, so the build stays deterministic; enrichment is inspectable before gold; a
+      failed LLM run leaves the last enrichment in place. Rejected: a dbt Python model calling the
+      LLM mid-build.
+- [ ] **LEFT JOIN, never inner** — a missing enrichment must not drop a breed from dim_breeds.
+- [ ] Batch all 628 in one pass, cache by breed_id, prompt + cost/latency note + light eval
+      (`accepted_values` on the enum — LLM output is untrusted input — plus a few hand-labels).
 
 **M8 — Polish & submit (Day 5, ≥24h before Tue 11am → submit by Mon 11am)**
 - [ ] Finish DECISIONS.md incl. "what I'd do next".

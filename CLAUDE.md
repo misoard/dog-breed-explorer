@@ -31,6 +31,17 @@ Persistent context for Claude Code. Read this every session. The detailed schema
   logic in the dashboard.
 - The daily source is effectively static; "daily freshness" is a proxy for a real changing source,
   so the point is **idempotency + partial-failure safety**, not new volume.
+- **Stateless — the API is the source of truth.** Every run re-fetches and rebuilds; no state
+  survives between runs. `run_date` partitions raw for idempotency (DELETE+INSERT of the day's
+  partition), NOT to build a history — that was tried and reversed (DECISIONS.md §1). A fresh empty
+  warehouse is a supported start. Locally the file persists, so partitions accumulate as a side
+  effect → **`stg_breeds` MUST filter to the latest `run_date`**.
+- **CI proves the pipeline; the laptop serves it.** Actions ingests, builds, tests, goes green, and
+  discards its warehouse. The Streamlit demo reads the local `dogs.duckdb`, live. Deliberate POC
+  scope (DECISIONS.md §5) — don't "fix" it by adding S3/MotherDuck/artifact persistence.
+- **Two dbt targets, same code (scored):** `dev` → `dogs_dev.duckdb` (iterating), `prod` →
+  `dogs.duckdb` (CI + the local demo build the dashboard reads). Only the path differs — never the
+  SQL. `ingest.py --db` must point at the same file as the target. Schema in SPEC.md.
 
 ## Non-negotiable rules
 - **Secrets never in the repo.** `/v1/breeds` **requires an API key** — unauthenticated calls return
@@ -62,10 +73,30 @@ Minimum per SPEC.md: `breed_id` unique+not_null; `size_class` accepted_values (i
 custom weight_min<=max; custom lifespan_min<=max; custom no-'unknown'-sentinel; unit-ratio
 plausible; bridge relationships. Iterate models against `dbt build` / `dbt test` until green.
 
-## Dashboard questions — CONFIRMED in M0.5 (answering 2 of 4)
-(1) **breeds per weight class**, (2) **size vs life span**. Both read `mart_size_class_summary` /
-`mart_size_vs_lifespan`. Narrative states what the data SAYS ("smaller breeds tend to live longer";
-13.3 yr toy → 10.6 yr giant), and calls lifespan "midpoint of published range".
+## Dashboard questions — CONFIRMED in M0.5 (answering 3 of 4)
+(1) **breeds per weight class**, (2) **size vs life span**, (3) **characteristic temperaments per
+size class**. Read `mart_size_class_summary` / `mart_size_vs_lifespan` /
+`mart_size_class_temperaments` (+ `mart_metric_correlation` numbers as the size=weight evidence).
+Narrative states what the data SAYS ("smaller breeds tend to live longer"; 13.3 yr toy → 10.6 yr
+giant; "temperament varies systematically with size"), and calls lifespan "midpoint of published
+range".
+- **Q3 is a `GROUP BY size_class, temperament` + `COUNT`, plus `pct_of_class`** (count / breeds in
+  class) — raw counts favour big classes. Normalising within a group is arithmetic; comparing to a
+  baseline is inference. **No lift, no baseline** — that's the line. Top-N is the dashboard's job,
+  not gold's.
+- **CUT — do not build:** `mart_size_scaling_fit` (isometry exponent k) and the height-vs-weight
+  curve. An exponent is not a "fact about dog breeds". Rule: **descriptive fact → gold, inferential
+  cleverness → DECISIONS.md §0.** `mart_metric_correlation` stays (it's about life span).
+  `height_mid_cm` is NOT in `mart_size_vs_lifespan` — no reader. Height stays a fact in `dim_breeds`
+  + `mean_height_cm` in `mart_size_class_summary`.
+
+## dbt mechanics (decided — SPEC.md is canonical)
+- **staging = view in `main_staging`; marts = table in `main_marts`**; set in `dbt_project.yml`
+  (`+schema: staging` concatenates onto `main`), never per model. Views for a parse pass with one
+  consumer; tables for what a dashboard reads repeatedly.
+- **LLM bonus = Pattern A:** `enrich.py` reads `stg_breeds` → LLM → writes `raw.breed_enrichment`;
+  `dim_breeds` **LEFT JOIN**s it via `source()`. Order: ingest → dbt staging → enrich → dbt marts.
+  dbt never makes a network call.
 - **"Size" = weight, not height** — weight↔life −0.671 vs height↔life −0.503, and the two are
   0.860-coupled, so height adds little. Evidence in `mart_metric_correlation`.
 - **Never a dual-axis chart.** Counts and life span render as two charts stacked on a shared
