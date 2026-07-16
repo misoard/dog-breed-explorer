@@ -9,8 +9,16 @@ Persistent context for Claude Code. Read this every session. The detailed schema
   one-shot the project. I'm being tested on understanding what you built, so this is non-negotiable.
 - **Explain your choices as you go** — especially dbt models and how `ref()` / `source()` wire the
   DAG. If I couldn't explain a piece to an interviewer, we're going too fast.
-- **Commit incrementally, one commit per meaningful step** (not one giant final commit). The commit
-  history should read like the milestones.
+- **Commit at each completed, working milestone** — not per keystroke, not one dump at the end.
+  Each commit is **one logical, working step**, and the subject explains it in **one sentence**.
+  The history reads like the milestones (M0 · M1 · M2…), not like a changelog of an afternoon's
+  edits. A fixup for a bug introduced minutes ago is **not its own commit** — fold it in. The
+  tests-first loop happens *inside* a commit, never as commits (no `wip: parser red`); a model and
+  its tests are one unit, so they land together.
+- **Commit messages are NOT documentation.** Reasoning → DECISIONS.md. Narrative + reversals →
+  DAY_REPORT.md. Schema → SPEC.md. A message says *what changed* in a sentence and points at those
+  files; it never duplicates them. _(Learned the hard way: M0–M1 produced 10 commits — 8 of them one
+  afternoon of doc churn — with 17–31-line essay messages, for 2 real milestones. Squashed to 4.)_
 - If a decision isn't covered here or in SPEC.md, ask me rather than assuming.
 
 ## The stack (decided — don't change without flagging a tradeoff)
