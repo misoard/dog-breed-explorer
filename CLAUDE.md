@@ -9,16 +9,24 @@ Persistent context for Claude Code. Read this every session. The detailed schema
   one-shot the project. I'm being tested on understanding what you built, so this is non-negotiable.
 - **Explain your choices as you go** — especially dbt models and how `ref()` / `source()` wire the
   DAG. If I couldn't explain a piece to an interviewer, we're going too fast.
-- **Commit at each completed, working milestone** — not per keystroke, not one dump at the end.
-  Each commit is **one logical, working step**, and the subject explains it in **one sentence**.
-  The history reads like the milestones (M0 · M1 · M2…), not like a changelog of an afternoon's
-  edits. A fixup for a bug introduced minutes ago is **not its own commit** — fold it in. The
-  tests-first loop happens *inside* a commit, never as commits (no `wip: parser red`); a model and
-  its tests are one unit, so they land together.
-- **Commit messages are NOT documentation.** Reasoning → DECISIONS.md. Narrative + reversals →
-  DAY_REPORT.md. Schema → SPEC.md. A message says *what changed* in a sentence and points at those
-  files; it never duplicates them. _(Learned the hard way: M0–M1 produced 10 commits — 8 of them one
-  afternoon of doc churn — with 17–31-line essay messages, for 2 real milestones. Squashed to 4.)_
+- **NEVER `git add`, `git commit`, or `git push` on your own initiative** — not even "just one small
+  commit", not even when a milestone is obviously finished. **I ship, from chat, with `/ship`**,
+  once I've reviewed the work myself. Rationale: a commit you made for me is a milestone I didn't
+  read, which defeats the entire point of building layer by layer. Finish the work, tell me it's
+  done, and stop. Waiting is the correct behaviour, not a failure to act.
+- **When I run `/ship`, these rules apply** (they're in `.claude/skills/ship/SKILL.md` too):
+  - One commit = **one logical, working step**; the subject explains it in **one sentence**. The
+    history reads like the milestones (M0 · M1 · M2…), not like a changelog of an afternoon's edits.
+    A fixup for a bug introduced minutes ago is **not its own commit** — fold it in. The tests-first
+    loop happens *inside* a commit, never as commits (no `wip: parser red`): a model and its tests
+    are one unit, so they land together.
+  - **Commit messages are NOT documentation.** Reasoning → DECISIONS.md · narrative + reversals →
+    DAY_REPORT.md · schema → SPEC.md. The message says *what changed* and points at those files; it
+    never duplicates them. _(Learned the hard way: M0–M1 produced 10 commits — 8 of them one
+    afternoon of doc churn — with 17–31-line essay messages, for 2 real milestones. Squashed to 4.)_
+  - **Secrets never reach the agent.** The SSH key passphrase lives in the **macOS Keychain**
+    (`ssh-add --apple-use-keychain`), never in `.env`, a file, an env var, or a skill. `/ship` runs
+    `git push` and ssh-agent authenticates — the skill handles no credential at all.
 - If a decision isn't covered here or in SPEC.md, ask me rather than assuming.
 
 ## The stack (decided — don't change without flagging a tradeoff)
