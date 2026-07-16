@@ -14,3 +14,10 @@ logs/
 
 .DS_Store
 .venv/
+
+# Heyra's case-study brief — their document, not mine to redistribute.
+# Deliberately NOT a *.pdf glob: M6 exports the dashboard narrative as a PDF, which ships.
+Heyra_Data_Engineer_Case.pdf
+
+# My personal prep/memory aid — debrief rehearsal notes, not a project deliverable.
+RECAP_NOTES.md
