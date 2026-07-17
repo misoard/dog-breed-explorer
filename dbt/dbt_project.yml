@@ -40,7 +40,9 @@ flags:
 # also blind to losing up to 31 breeds. assert_no_breed_lost reconciles raw->gold exactly
 # instead, with no constant at all. See DECISIONS.md §3.
 vars:
-  max_unknown_size_class_pct: 1    # observed 2/627 = 0.32%
+  max_unknown_size_class_pct: 0    # DO NOT MERGE — temporarily 0 (was 1) to force
+                                   # assert_unknown_bucket_small to WARN (0.32% > 0%),
+                                   # proving CI surfaces ::warning:: on a real PR. Revert to 1.
   max_lifespan_null_pct: 10        # observed 40/627 = 6.4%
 
 # Materialization + schema are set HERE, per layer — never per model. A model that
