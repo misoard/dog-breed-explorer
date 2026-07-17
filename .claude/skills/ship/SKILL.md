@@ -62,7 +62,32 @@ on quotes and em-dashes.
 _(Why these rules exist: M0–M1 produced 10 commits — 8 of them one afternoon of doc churn — with
 17–31-line essay messages, for 2 real milestones. Squashed to 4.)_
 
-## 4. Push — never force without asking
+## 4. Branch — only if the user asks
+
+Default is the **current branch**. Never create or switch branches on your own; a branch the user
+didn't ask for is a commit they can't find.
+
+If the user asks for a new branch ("/ship to a new branch", "/ship on a feature branch"):
+
+```bash
+git switch -c <branch>          # branches off current HEAD, keeping the staged work
+git push -u origin <branch>     # -u sets upstream so later pushes are a bare `git push`
+```
+
+- **Name it after the work**, not the tool: `m2-dbt-staging`, `m3-marts`. Ask if it's ambiguous.
+- A new branch has **no remote counterpart, so there is no divergence and never a force push** —
+  the rejected-push problem below only exists on a rewritten `main`.
+- **Already on a non-main branch?** Don't nest a new one off it unless asked — just commit there.
+- **Uncommitted work carries over** to the new branch with `switch -c`, which is what we want:
+  create the branch first, then commit onto it.
+- Tell the user the branch name and the PR URL that GitHub prints, if they want one. Do **not**
+  open a PR unless asked.
+
+> Worth knowing: milestone branches + PRs into `main` are also what make the M5 CI actually fire —
+> a `on: pull_request` workflow needs a PR to run against. Committing straight to `main` means the
+> PR-triggered half of CI never demonstrates itself.
+
+## 5. Push — never force without asking
 
 ```bash
 git push
@@ -83,7 +108,7 @@ git rev-list --left-right --count origin/main...main   # behind / ahead
 git push --force origin main                            # ONLY on explicit approval
 ```
 
-## 5. Report
+## 6. Report
 
 State plainly what landed: the subject line, the files, and the push result. If anything was
 skipped, refused, or failed, say so — including a failed build or a rejected push. Never report a
