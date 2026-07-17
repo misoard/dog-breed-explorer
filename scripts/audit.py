@@ -223,8 +223,14 @@ def check_promised_tests() -> None:
         if name in on_disk or name in yaml_text:
             ok(name if name in on_disk else f"{name} (generic, in YAML)")
             continue
-        # A name mentioned ONLY as "supersedes X" is not a promise — it's a tombstone.
-        if re.search(rf"supersed\w*\s+(the old\s+)?`?{name}", "\n".join(docs.values()), re.I):
+        # A name mentioned only near "supersedes / replaces / cut / retired" is not a promise
+        # — it's a tombstone. Check EVERY occurrence: if even one sits in live prose, it's a
+        # promise. (First version only matched "supersedes X" and cried wolf over the
+        # deliberate write-up of a test we removed on purpose.)
+        blob = "\n".join(docs.values())
+        occurrences = [m.start() for m in re.finditer(re.escape(name), blob)]
+        tomb = re.compile(r"supersed|replac|\bcut\b|retired|removed|tombstone", re.I)
+        if occurrences and all(tomb.search(blob[max(0, i - 260): i + 260]) for i in occurrences):
             superseded.append(name)
         # Named against a future milestone in the plan, e.g. "[M4]" on the same line.
         elif re.search(rf"{name}.*\[M[4-9]\]|\(M[4-9]\).*{name}|{name}.*\(M[4-9]\)", plan):
