@@ -61,3 +61,37 @@ models:
       - name: loaded_at
         data_tests:
           - not_null
+
+  # ------------------------------------------------------------------------------------
+  - name: stg_breed_temperaments
+    description: >
+      Silver bridge. One row per (breed, normalised tag) — the comma-separated string
+      turned into something queryable. 627 breeds -> ~3,539 rows (~5.6 tags each).
+
+      WHY A BRIDGE: "Confident, alert, playful" in one cell cannot be grouped, counted or
+      joined. `LIKE '%playful%'` is a full scan that also matches the wrong rows, at any
+      size. The bridge is the standard star-schema many-to-many and scales fine — at 100k
+      breeds it's ~560k rows, nothing for a columnar engine. See DECISIONS.md §3.
+
+    columns:
+      - name: breed_id
+        description: FK to stg_breeds.
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_breeds')
+              field: breed_id
+
+      - name: temperament
+        description: >
+          The tag, lowercased + trimmed. Normalisation happens HERE, in silver, before
+          anything groups on it — the source ships the same tag in two casings
+          ("Confident" on Affenpinscher, "confident" on Afghan Hound). 66 distinct raw
+          tags collapse to 46 once folded.
+        data_tests:
+          - not_null
+
+      - name: temperament_display
+        description: Title-cased for the dashboard. Presentation only — never group on this.
+        data_tests:
+          - not_null
