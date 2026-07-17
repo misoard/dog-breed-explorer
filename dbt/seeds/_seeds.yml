@@ -1,0 +1,37 @@
+version: 2
+
+seeds:
+  - name: size_class_bands
+    description: >
+      THE ONLY HOME of the size_class boundaries (5 / 12 / 25 / 45 kg). They are DATA, not
+      code — so they live in a seed, get tested like data, and can be changed without
+      touching a model. Frozen in M0.5 against the real weight distribution.
+
+      Intervals are HALF-OPEN [min_kg, max_kg): lower inclusive, upper EXCLUSIVE. The join
+      predicate is literal, so there is no room for interpretation:
+          weight_mid_kg >= min_kg AND weight_mid_kg < max_kg
+      Consequences, stated so nobody re-derives them: 45.0 kg is `giant` (not large),
+      25.0 kg is `large` (not medium), 5.0 kg is `small` (not toy).
+
+      This is NOT pedantry — 31 breeds (5%) sit EXACTLY on a boundary, 23 of them on 25 kg.
+      `pd.cut` defaults to the OPPOSITE (right-closed) convention, which is precisely how
+      the M0.5 explorer and a SQL prototype came to disagree by 2 breeds. Any Python
+      reproducing these numbers must pass right=False.
+
+      'unknown' is deliberately NOT here: a label with no range has no business in a range
+      table. The null case is an explicit CASE branch in dim_breeds, before the join.
+
+    columns:
+      - name: label
+        description: toy | small | medium | large | giant. The five real bands, no 'unknown'.
+        data_tests:
+          - unique
+          - not_null
+      - name: min_kg
+        description: INCLUSIVE lower bound.
+        data_tests:
+          - not_null
+      - name: max_kg
+        description: EXCLUSIVE upper bound. 999 on `giant` is a sentinel for "no ceiling".
+        data_tests:
+          - not_null

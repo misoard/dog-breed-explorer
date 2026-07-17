@@ -1,0 +1,209 @@
+version: 2
+
+# THE CONTRACT for the gold layer — written before the models exist.
+
+models:
+  - name: dim_breeds
+    description: >
+      Gold. One row per breed: everything stg_breeds carries, plus the DERIVED columns —
+      weight_mid_kg, height_mid_cm, life_span_range_years, size_class.
+
+      The silver/gold line: staging makes the data CORRECT (parse, type, dedupe — no
+      opinions). This is where the OPINIONS live. That 25.0 kg is `large` and not `medium`
+      is a judgment call, not a fact about the API. The test: if Heyra disagreed with the
+      bands, only this layer changes; if the API changed its weight format, only staging does.
+
+      NOT contracted (`contract: enforced`), deliberately: nothing outside the DAG reads
+      dim_breeds — the marts reach it via ref(), so a rename already breaks the build at
+      compile. Its ~18 columns would make it the one expensive contract, buying nothing.
+      See DECISIONS.md §3.
+
+    columns:
+      - name: breed_id
+        description: PK.
+        data_tests:
+          - unique       # ALSO the fan-out detector: a breed matching two bands lands twice
+          - not_null
+
+      - name: breed_name
+        data_tests:
+          - unique
+          - not_null
+
+      - name: weight_mid_kg
+        description: >
+          (weight_min_kg + weight_max_kg)/2 — an EXPLICIT column, not an artifact of the
+          parser's regex, so the rule is visible and testable. size_class is bucketed from
+          this. Null for the 2 sentinel breeds.
+
+      - name: size_class
+        description: >
+          From weight_mid_kg via the size_class_bands seed, half-open [min, max).
+          'unknown' is the explicit null branch, handled BEFORE the join.
+        data_tests:
+          - not_null     # 'unknown' is a value, never a NULL — the null branch must be explicit
+          - accepted_values:
+              # the five seed labels + 'unknown'. The seed supplies the five; 'unknown' is
+              # deliberately not in it (a label with no range has no place in a range table).
+              values: ['toy', 'small', 'medium', 'large', 'giant', 'unknown']
+
+      - name: life_span_range_years
+        description: max - min. Null when life_span is null (40 breeds).
+
+      - name: loaded_at
+        data_tests:
+          - not_null
+
+  # --------------------------------------------------------------------------------------
+  # CONTRACTED from here down. The rule: contract where dbt's knowledge ENDS.
+  # Everything inside the DAG is protected for free — rename a stg_breeds column and
+  # dim_breeds fails at compile, because ref() makes that dependency visible. These models
+  # are read by the dashboard or by humans with SQL: dbt cannot see either, so a rename here
+  # goes green and breaks the CONSUMER. A contract is a function signature for a table; it
+  # moves the failure from the demo to CI. (DECISIONS.md §3.)
+
+  - name: breed_temperaments
+    description: >
+      Gold bridge — the brief's "queryable temperament list". Read by humans with SQL, which
+      is outside the DAG, which is why it's contracted despite the dashboard not reading it.
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: breed_id
+        data_type: integer
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_breeds'), field: breed_id}
+      - name: temperament
+        data_type: varchar
+        description: Lowercased + trimmed. GROUP BY this.
+        data_tests: [not_null]
+      - name: temperament_display
+        data_type: varchar
+        description: Sentence-cased. Presentation only — never group on this.
+        data_tests: [not_null]
+
+  - name: mart_size_class_summary
+    description: "Grain: size_class (6 rows). Count bars + mean-life-span line + the numbers table."
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: size_class
+        data_type: varchar
+        data_tests:
+          - not_null
+          - unique
+          - accepted_values: {values: ['toy','small','medium','large','giant','unknown']}
+      - name: breed_count
+        data_type: bigint
+        description: Every breed in the class — the count bars' denominator.
+        data_tests: [not_null]
+      - name: breeds_with_life_span
+        data_type: bigint
+        description: >
+          Only those WITH a life span. Differs from breed_count and NOT evenly — toy 29/40,
+          giant 58/58. Both denominators exposed on purpose.
+        data_tests: [not_null]
+      - name: mean_life_span_years
+        data_type: double
+      - name: median_life_span_years
+        data_type: double
+      - name: stddev_life_span_years
+        data_type: double
+        description: ±1σ error bars. Required, not optional — the mean alone oversells the trend.
+      - name: min_life_span_years
+        data_type: double
+      - name: max_life_span_years
+        data_type: double
+      - name: mean_weight_kg
+        data_type: double
+      - name: mean_height_cm
+        data_type: double
+
+  - name: mart_size_vs_lifespan
+    description: "Grain: breed. Scatter-ready. Nulls KEPT — mart_data_coverage states what's dropped."
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: breed_id
+        data_type: integer
+        data_tests: [not_null, unique]
+      - name: breed_name
+        data_type: varchar
+        data_tests: [not_null]
+      - name: size_class
+        data_type: varchar
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['toy','small','medium','large','giant','unknown']}
+      - name: weight_mid_kg
+        data_type: double
+      - name: life_span_mid_years
+        data_type: double
+
+  - name: mart_metric_correlation
+    description: "Grain: (metric_a, metric_b), 3 rows. The evidence that size = weight, not height."
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: metric_a
+        data_type: varchar
+        data_tests: [not_null]
+      - name: metric_b
+        data_type: varchar
+        data_tests: [not_null]
+      - name: correlation
+        data_type: double
+        data_tests: [not_null]
+      - name: n_breeds
+        data_type: bigint
+        description: PAIRWISE population. A correlation without its population is not a fact.
+        data_tests: [not_null]
+
+  - name: mart_size_class_temperaments
+    description: "Grain: (size_class, temperament). Top tags per class, as % OF THE CLASS."
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: size_class
+        data_type: varchar
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['toy','small','medium','large','giant','unknown']}
+      - name: temperament
+        data_type: varchar
+        data_tests: [not_null]
+      - name: breed_count
+        data_type: bigint
+        data_tests: [not_null]
+      - name: breeds_in_class
+        data_type: bigint
+        description: The denominator, kept visible — a percentage you can't check isn't a fact.
+        data_tests: [not_null]
+      - name: pct_of_class
+        data_type: double
+        description: breed_count / breeds_in_class. Arithmetic, NOT lift — no baseline, no inference.
+        data_tests: [not_null]
+
+  - name: mart_data_coverage
+    description: "Grain: one row. What every chart drops — printed beside every chart."
+    config:
+      contract: {enforced: true}
+    columns:
+      - name: total_breeds
+        data_type: bigint
+        data_tests: [not_null]
+      - name: breeds_with_weight
+        data_type: bigint
+      - name: breeds_with_life_span
+        data_type: bigint
+      - name: breeds_with_both
+        data_type: bigint
+      - name: breeds_with_temperament
+        data_type: bigint
+        description: From the BRIDGE, not temperament_raw — Mongrel's sentence is a sentinel.
+      - name: breeds_plotted_scatter
+        data_type: bigint
+        description: Must equal mart_metric_correlation's n_breeds for weight<->life (585).
+      - name: breeds_excluded_scatter
+        data_type: bigint

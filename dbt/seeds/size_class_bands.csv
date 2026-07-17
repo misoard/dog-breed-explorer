@@ -1,0 +1,6 @@
+label,min_kg,max_kg
+toy,0,5
+small,5,12
+medium,12,25
+large,25,45
+giant,45,999
