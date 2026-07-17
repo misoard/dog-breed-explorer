@@ -248,6 +248,15 @@ importing the min/max logic.
   rebuilds silver/gold from scratch. A fresh, empty warehouse is a supported starting point, not a
   failure — which is exactly what GitHub Actions hands us, since every run gets a new VM and
   `dogs.duckdb` does not survive it.
+- **Verified end-to-end at M5, not just asserted.** This claim sat here unproven for two days: M1
+  only ever tested the *ingestion* half against an empty file, and "the rest rebuilds fine" was an
+  argument, not a result. Against a warehouse that did not exist,
+  `DBT_DUCKDB_PATH=/tmp/fresh.duckdb ./scripts/run_pipeline.sh` reproduced **every** published
+  number from nothing: **628** raw rows in **1** partition → **627** `dim_breeds` → **3,538** bridge
+  rows → coverage **627 / 585 / 42**, toy **29/40** vs giant **58/58**, and `PASS=45 WARN=0
+  ERROR=0`. That is the CI VM's exact starting condition, so CI is not a special case — it's the
+  same run. Worth the ten minutes: the whole statelessness argument rests on this working, and I'd
+  have found out at 02:00 on the first cron otherwise.
 - **Why (and this reverses an earlier decision):** I first designed raw to **accumulate** one
   628-row partition per `run_date`, to keep a history of long-term change. Then the CI question
   exposed what that actually costs: to keep that history I'd have to bolt persistence onto the
@@ -304,10 +313,56 @@ importing the min/max logic.
   row lookups — so a column-oriented analytical engine is the right fit, not MySQL/Postgres
   (OLTP). DuckDB is zero-infrastructure, reads JSON/Parquet natively (trivial ingestion), and is
   the modern default for local analytics.
-- **Layering:** raw (bronze) → staging (silver) → marts (gold). _[note schema/file layout]_
+- **Layering:** one file, `dogs.duckdb`, four schemas — the layers are *schemas*, not folders, so
+  the boundary is enforced by the warehouse rather than by convention:
+
+  | schema | holds | written by | materialized |
+  |---|---|---|---|
+  | `raw` | `breeds` — verbatim JSON + `run_date`, `loaded_at` | **`ingest.py`**, never dbt | table |
+  | `main` | `size_class_bands` (the seed) | `dbt seed` | table |
+  | `main_staging` | `stg_breeds`, `stg_breed_temperaments` | dbt | **view** |
+  | `main_marts` | `dim_breeds`, the bridge, 5 marts | dbt | **table** |
+
+  (dbt *concatenates* a custom schema onto the target's, so the config says `staging` and you get
+  `main_staging`. Writing `main_staging` yields `main_main_staging` — a five-minute lesson.)
+
+### Materialization: **views for staging, tables for marts** — and the scale answer
+
+Set once per layer in `dbt_project.yml`, never per model: a model that has to know where it lives
+is a model you can't move.
+
+**A view is a saved query, not rows.** `stg_breeds` stores zero data — it *is* the parser, and the
+regex re-executes on every read. It's read **~12× per build** (10 of its own tests + the two
+downstream models). A table pays the parser **once** and the 12 reads become cheap scans.
+
+**Measured**, on a 628,000-row synthetic source (1000× the real one, to make the gap visible):
+
+| | build | 12 reads | total |
+|---|---|---|---|
+| view | 0.00s | 0.75s | **0.75s** |
+| table | 0.14s | 0.00s | **0.15s** |
+
+**So why is staging still a view?** Because at **628 rows** that entire cost is ~1ms × 12, and a
+view buys two things a table can't: **zero storage**, and it **cannot go stale** — it's consistent
+with `raw` by construction, whereas a table is a snapshot until dbt rebuilds it. Staging is a
+parse-and-type pass with exactly one consumer (marts), so re-running it is free and never wrong.
+
+**Marts are tables for the mirror-image reason:** the dashboard reads them repeatedly and on demand,
+so the read path must never re-execute the parser. Build once, scan many.
+
+**The rule, and the crossover:** *views for a cheap pass with one consumer; tables for what's read
+repeatedly.* You flip when `reads × parse_cost > storage + rebuild_cost` — which at 100M rows is a
+6-minute recomputation of an identical answer versus a few GB of disk. **Storage is cheap; repeated
+compute isn't.** And the flip is **one line in `dbt_project.yml`, no SQL touched** — which is the
+real point: the materialization is a deployment decision, not a modelling one, so it stays out of
+the models entirely.
+
+_(One trap, verified: a **contract constraint on a view is silently ignored** — `PASS`, no warning.
+So contracts only mean anything on the marts. On staging they'd be theatre. See §3.)_
+
 - **Traded off:** no always-on warehouse / no cloud — fine for a POC; a real deployment might use
   MotherDuck or BigQuery for shared access.
-- **With more time:** _[MotherDuck for a hosted shared copy]_
+- **With more time:** MotherDuck for a hosted shared copy — the same dbt code, one profile change.
 
 ## 3. Transformation & modeling — **dbt Core**
 
@@ -690,9 +745,74 @@ demonstrated on the same repo half an hour apart.
   nothing is published.
 - **Follows from statelessness (§1):** since every run rebuilds from the API anyway, a run's
   warehouse has no unique value worth persisting. The two decisions are the same idea applied twice.
+### The pipeline lives in a **script**, not in YAML — so the workflows are thin triggers
+
+- **Chose:** `scripts/run_pipeline.sh` defines the pipeline once (resolve the path → `ingest.py`
+  → `dbt build --target prod`). `ci.yml` (on PR) and `scheduled.yml` (on cron) each collapse to
+  checkout + setup-python + `pip install` + **`./scripts/run_pipeline.sh`** + surface warns.
+- **Why not one reusable `workflow_call` workflow, or one file with both triggers:** the usual
+  argument for those is "don't define the pipeline twice" — but **that duplication only exists if
+  the pipeline lives in YAML**. Once it lives in a script, what's repeated is ~8 lines of checkout
+  and pip boilerplate, and `workflow_call` would add a concept a reviewer has to learn — plus break
+  the badge, since each badge would then point at a *caller* rather than the job — in order to
+  deduplicate `actions/checkout`. That's the tail wagging the dog.
+- **The rule: deduplicate in the script, not in the CI system.** The YAML then stays a trigger, the
+  pipeline is runnable identically on my laptop and in Actions (same script, same seam), and none of
+  it is locked to GitHub Actions — if this ever moved to GitLab or Dagster, the pipeline definition
+  moves unchanged and only the trigger is rewritten.
+- **Why two workflows and not one file with `on: [pull_request, schedule]`:** they answer genuinely
+  different questions — **"does this change work?"** vs **"does the API still look like we think?"**
+  — and merging them makes one status check for both. When the cron goes red at 02:00 that is
+  precisely the thing I don't want: a red I have to open and read before I know whether the world
+  changed or someone's PR is broken. Two triggers, two badges, two reactions.
+- **The seam it closes:** `ingest.py --db` and dbt's `profiles.yml` are two separate programs that
+  must agree on one DuckDB file, and they run from **different working directories** (dbt must run
+  from `dbt/`, so its relative paths mean something different). The script resolves `DBT_DUCKDB_PATH`
+  to an **absolute** path once and hands it to both. That is the single fragile joint in the design,
+  and it now has exactly one home.
+- **A local-only wrinkle, stated:** the script prepends the project `.venv` to `PATH` when one
+  exists. dbt needs protobuf>=6 and my conda base pins <4 — they cannot coexist, and I broke my
+  environment on this once. CI has no `.venv` (pip installs into setup-python's env), so it falls
+  through to `PATH` and the branch never fires there.
+
+### Making `warn` visible: `scripts/annotate_warns.py` — **the milestone's real content**
+
+The severity split (§3) was only half a decision. dbt prints WARN and **exits 0**, so a fired
+distributional guard leaves CI **green** and the signal dies in a collapsed log. Five tests are
+`severity: warn`; until something surfaces them, the whole classification is **theatre — tests
+carefully sorted into a bucket no human ever reads**. So CI parses `target/run_results.json` into
+GitHub `::warning::` annotations plus a `$GITHUB_STEP_SUMMARY` table.
+
+- **It exits 0 when it finds warns, deliberately.** Failing here would re-implement `--warn-error`
+  and destroy the distinction it exists to serve. A warn is for a human to judge ("real regression
+  or legitimate drift?"), not for a robot to block on. `--warn-error` stays off for the same reason
+  `warn_error_options` is scoped to `NodeNotFoundOrDisabled` only (§3).
+- **A committed Python script, not inline `jq`** — and the reason is the one I've applied all week:
+  **a bug in inline jq produces no annotation, which is indistinguishable from no warnings.** The
+  mechanism whose entire job is making problems visible would fail *invisibly*. That's the same
+  disqualifying shape as a vacuous green or an unfireable test, arriving one level up: a guard that
+  can silently stop guarding. A script runs locally against a real or synthetic `run_results.json`,
+  so the mechanism is **proven before CI depends on it** — and can be demonstrated on demand.
+- **Which is exactly what I did, rather than asserting it.** I forced two real warns
+  (`dbt test --vars '{max_unknown_size_class_pct: 0, max_lifespan_null_pct: 1}'`) and watched dbt
+  report **`WARN=2` and exit 0** — the failure mode, reproduced. The same run through the annotator
+  emits two `::warning::` lines and the summary table, and still exits 0. Also proven: the
+  hash-suffixed generic-test id renders readably, and warns still surface when the build is red
+  (the step is `if: always()` — a red build is when you most want to know what else fired).
+- **Its own failure is loud:** a missing or corrupt `run_results.json` emits `::error::` and exits
+  **1**. "I found no warnings" and "I could not look" must never render identically — that would
+  rebuild the exact silence this script exists to break.
+
 - **Traded off:** there is no public/hosted dashboard URL, and "daily freshness" is proven rather
   than served. If the explorer had real users, this is exactly the line I'd cross: the cron would
   publish to durable storage and the dashboard would read that.
+- **Traded off — every PR spends a real API call.** There is no fixture and no persisted warehouse
+  (§1), so `raw.breeds` doesn't exist until `ingest.py` creates it: "install + `dbt build`" alone
+  would fail on a missing source. The upside is that **every PR check is a genuine end-to-end run
+  from an empty warehouse**, which is the property §1 claims and M5 finally verified. The cost is
+  that a fork PR (no access to the secret) 403s, and CI can go red because *the API* is down rather
+  than because the code is wrong. At one contributor and one daily job, that's the right trade; with
+  outside contributors I'd land a recorded fixture for the PR path and keep the live call on the cron.
 - **With more time:** publish the `.duckdb` as a Release asset or push to **MotherDuck**, and point
   a hosted Streamlit at it — that turns the same pipeline into a serving one, with no model changes.
   Also: dbt docs uploaded as an artifact, and an alert on a failed scheduled run (a red cron nobody
