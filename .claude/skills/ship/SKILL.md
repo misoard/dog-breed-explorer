@@ -82,16 +82,54 @@ git push -u origin <branch>     # -u sets upstream so later pushes are a bare `g
 - A new branch has **no remote counterpart, so there is no divergence and never a force push** —
   the rejected-push problem below only ever applies to a rewritten `main`.
 
-**Then hand the user the PR link.** `git push -u` on a new branch makes the remote print it:
+**Then hand the user a PR link with the title and body already drafted.**
 
-```
-remote: Create a pull request for 'm5-ci' on GitHub by visiting:
-remote:      https://github.com/misoard/dog-breed-explorer/pull/new/m5-ci
+GitHub's compare URL accepts `title` and `body` as query params, so the form opens pre-filled and
+the user only reviews and clicks **Create**. Build it with `scripts/pr_url.py` (URL-encodes and
+prints the link):
+
+```bash
+.venv/bin/python scripts/pr_url.py --branch <branch> --title "<title>" --body-file <file>
 ```
 
-**Surface that URL** — it's the one thing the user needs next. Do **NOT** open the PR and do **NOT**
-merge: the PR *is* the review checkpoint, and an agent that opens and merges its own PRs has
-reinvented pushing to `main` with extra ceremony. The user opens it, watches CI, and merges.
+> **NEVER use an em-dash (—) in the PR title or body.** Not once. Rewrite the sentence instead:
+> use a colon, a full stop, or split it in two. This is a hard rule, not a preference to weigh
+> against readability, and it applies to every character of generated PR text.
+>
+> | instead of | write |
+> |---|---|
+> | `M5 — CI on PR and a daily cron` | `M5: CI on PR and a daily cron` |
+> | `two triggers — one pipeline` | `two triggers, one pipeline` |
+> | `it warns, and that's the point — nobody reads it` | `it warns, and that's the point. Nobody reads it.` |
+>
+> If a sentence seems to need one, it is doing two jobs and wants to be two sentences.
+
+**Draft the title by the same rule as a commit subject**: one sentence, says what changed. Name the
+change, not the milestone. `M5 ci` is a label; `M5: CI on PR, daily cron, and dbt warnings
+surfaced` is a sentence someone can act on.
+_(With **rebase-only** merging the title does NOT become a commit message — each commit keeps its
+own. So it's the label in the PR list, not load-bearing. With squash it would be; we don't squash.)_
+
+**Draft the body by the same rule as a commit message: WHY, not what — the diff shows what.**
+Reasoning → DECISIONS.md · narrative → DAY_REPORT.md · schema → SPEC.md. **Point at them; never
+paste them.** A useful body is four short sections:
+
+```markdown
+<one line: what this lands>
+
+**What landed** — the files, one line each
+**Why <the non-obvious choice>** — the decision a reviewer would question, answered in 2 lines
+**How to verify** — the command, the expected numbers, and where the reasoning lives
+**Note** — anything half-wired, uncertain, or deliberately deferred. Say it before they find it.
+```
+
+That last section is the one that earns trust: flag what's incomplete rather than letting a reviewer
+discover it. Communication is a graded dimension of this project — a PR body is evidence of how I
+work, not paperwork.
+
+**Then STOP.** Do **NOT** open the PR and do **NOT** merge. The PR *is* the review checkpoint, and an
+agent that opens and merges its own PRs has reinvented pushing to `main` with extra ceremony. The
+user clicks Create, watches CI, and merges.
 
 **After they merge, their local `main` is behind** — the merge happened on GitHub. Remind them:
 
