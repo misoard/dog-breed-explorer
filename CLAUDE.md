@@ -77,8 +77,11 @@ Persistent context for Claude Code. Read this every session. The detailed schema
 
 ## Data facts that drive the model (from profiling — see SPEC.md for full schema)
 - 628 rows; `id` unique+non-null → PK = `id` (cast INTEGER).
-- `weight.metric` / `height.metric` are **kg / cm** (units inferred from imperial:metric ratio,
-  not declared — assert this in a test). Mostly **sex-specific ranges** "Male: X-Y; Female: A-B".
+- `weight.metric` / `height.metric` are **kg / cm** — **inferred, never declared**, from the ratio
+  to the imperial twin. **The directions differ:** weight `imperial/metric` ≈ 2.205 (lb/kg), height
+  `metric/imperial` ≈ 2.54 (cm/in) — because imperial is the bigger number for weight and metric is
+  for height. "imperial:metric ≈ 2.54 for height" is impossible (it's 0.394) and was wrong in SPEC
+  until `assert_unit_ratio_plausible` caught it. Mostly **sex-specific ranges** "Male: X-Y; Female: A-B".
   Collapse to a **whole-breed envelope**: `weight_min_kg`=overall min, `weight_max_kg`=overall max,
   store `weight_mid_kg`=(min+max)/2 explicitly; `size_class` buckets from the midpoint. Do NOT
   split male/female into separate columns.

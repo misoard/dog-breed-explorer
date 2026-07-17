@@ -190,13 +190,35 @@ exploration by dividing each `imperial` value by its `metric` twin across all br
 **2.200** over 2,108 pairs (kg→lb = 2.205), and **2.542** for height (in→cm = 2.54). Close enough to
 confirm kg/cm.
 
-An assumption that load-bearing shouldn't live only in a README, so it becomes a **dbt test —
-specified here, built in the dbt/testing milestone** (§3): assert the median imperial:metric ratio
-stays within tolerance of 2.205 / 2.54. If the
-source ever silently switches units or swaps the fields, every downstream number — `size_class`,
-the life-span story — would shift while still looking plausible. The test turns a silent corruption
-into a loud red build. This is exploration paying for itself: the check exists *because* profiling
-surfaced the missing-unit risk.
+An assumption that load-bearing shouldn't live only in a README, so it becomes a **dbt test**
+(`assert_unit_ratio_plausible`, built in M2). If the source ever silently switches units or swaps
+the fields, every downstream number — `size_class`, the life-span story — would shift while still
+looking plausible. The test turns a silent corruption into a loud red build. This is exploration
+paying for itself: the check exists *because* profiling surfaced the missing-unit risk.
+
+**The ratio directions differ, and I got this wrong first.** I wrote "median **imperial:metric**
+ratio near 2.205 (weight) / 2.54 (height)" here and in SPEC. That is arithmetically impossible:
+
+| metric | which side is the bigger number | assertion | bounds (±5%) |
+|---|---|---|---|
+| weight | **imperial** (7 lb vs 3.2 kg) | `imperial/metric` ≈ **2.205** lb/kg | [2.095, 2.315] |
+| height | **metric** (23 cm vs 9 in) | `metric/imperial` ≈ **2.54** cm/in | [2.413, 2.667] |
+
+In the imperial:metric direction height is **0.394** (= 1/2.54). I'd copied the pair "2.205 / 2.54"
+from my exploration notes without noticing the exploration had computed height the *other* way
+round. **The test caught it on its first run against real data, before the model it guards even
+existed** — which is the clearest argument for the contract-first order I'm going to make all week:
+a test written from the data found an error in the spec written from the same data.
+
+**The test deliberately does NOT reuse the model's parser** — and this is the part worth defending.
+It reads `source('raw', 'breeds')`, not `ref('stg_breeds')`, and re-implements a simpler
+first-number extraction of its own. Reusing `stg_breeds`' parsed columns would be less code and
+strictly worse: **a test that shares the implementation's code agrees with it by construction.** If
+the regex mis-extracts, both the model and the test mis-extract identically, the ratio still looks
+like 2.205, and the test reports green while the data is wrong. The duplication *is* the feature —
+it makes this a genuine second opinion rather than the parser grading its own homework. The same
+reasoning is why the test takes only the first number (it needs a ratio, not an envelope) instead of
+importing the min/max logic.
 
 ---
 
@@ -298,8 +320,8 @@ surfaced the missing-unit risk.
   argument is about, one level up.)
   | model | grain | serves |
   |---|---|---|
-  | `dim_breeds` | breed_id | both scatters + the record lookup |
-  | `breed_temperaments` | (breed_id, temperament) | tag frequency; the queryable temperament list |
+  | `dim_breeds` | breed_id | **internal** — the marts' building block. Nothing outside dbt reads it |
+  | `breed_temperaments` | (breed_id, temperament) | **the brief's "queryable" deliverable** — read by humans with SQL, not by the dashboard |
   | `mart_size_class_summary` | size_class | the count bars + mean-life-span line + the table |
   | `mart_size_vs_lifespan` | breed | the per-breed scatters |
   | `mart_metric_correlation` | (metric_a, metric_b) | the correlation numbers + the size=weight evidence |
@@ -340,6 +362,26 @@ surfaced the missing-unit risk.
   - `weight`/`height` `.metric` → `weight_min_kg`, `weight_max_kg` (+ height) — see units note below
   - `temperament` comma-list → bridge table `breed_temperaments`, tags **lowercased+trimmed** (66→46 tags once case-folded)
 
+  **The duplicate-tag decision: absorb the problem, keep the signal.** A breed could ship the same
+  tag twice — and our own case-folding can *create* one that isn't in the source (`"Loyal, loyal"` →
+  `'loyal','loyal'`), so the risk is ours, not the API's. Three options, and I built the wrong one
+  first:
+  - **`DISTINCT` alone** — correct numbers, but the source could change and nobody would ever know.
+  - **No `DISTINCT`, error test** (my first build) — loud, but **one odd breed fails the daily
+    unattended cron**, and the fix would almost certainly *be* to add `DISTINCT` anyway.
+  - **`DISTINCT` + a `warn` test that re-derives the split from `stg_breeds`** ← chosen. Correct
+    numbers, a green build, *and* a visible signal. The test parses independently — reading the
+    bridge would be pointless, since the `DISTINCT` has already removed the thing it's looking for.
+    Same trick as `assert_unit_ratio_plausible`: **a test downstream of the fix cannot see what the
+    fix hid.**
+
+  **The severity followed the design, not the other way round.** I first called a duplicate tag a
+  grain violation → `error`. That was only true *while it could reach the mart*. Once `DISTINCT`
+  guarantees the grain, a repeated source tag isn't broken data in my warehouse — it's the source
+  doing something new, which is **drift → warn**, exactly as the rule below says. The grain itself
+  stays guarded at `error` by `assert_tag_unique_per_breed` on the model's *output*, which now does
+  the job it's actually good at: catching someone deleting the `DISTINCT`. Two tests, two jobs.
+
   **Why a bridge, and does it scale?** The comma string is the thing that *doesn't* scale: you cannot
   index, group or join it at any size — `LIKE '%playful%'` is a full scan that also matches the wrong
   rows. The bridge is one row per (breed, tag): **3,544 rows** today (628 breeds × ~5.6 tags). This is
@@ -354,10 +396,10 @@ surfaced the missing-unit risk.
   - `'unknown'` string sentinels (2 weight, 2 height) → NULL **before** casting, else they poison numeric parsing
   - duplicate "Caucasian Shepherd Dog" (ids 70 & 269) → dedupe in staging, keep more-complete row
 - **Units & sex-specific ranges (the one real modeling judgment):** The API declares units
-  nowhere, so I inferred metric = kg/cm from the imperial:metric ratio (~2.205 for weight,
-  ~2.54 for height) and specified a dbt test asserting the ratio stays plausible — **to be built in
-  the dbt/testing milestone** (see Tests below) — to catch a silent
-  source change. Weight/height arrive mostly (430/628) as sex-specific ranges
+  nowhere, so I inferred metric = kg/cm from the ratio between the imperial and metric twins
+  (weight `imperial/metric` ~2.205 lb/kg; height `metric/imperial` ~2.54 cm/in — the directions
+  differ because imperial is the bigger number for weight and metric is for height, see §0) and
+  built `assert_unit_ratio_plausible` to catch a silent source change. Weight/height arrive mostly (430/628) as sex-specific ranges
   ("Male: X-Y; Female: A-B"). I collapse each to a **whole-breed envelope** — `weight_min_kg` =
   overall min, `weight_max_kg` = overall max — and store `weight_mid_kg` = (min+max)/2 as an
   **explicit derived column in gold**, from which `size_class` is bucketed. I chose the envelope
@@ -372,13 +414,43 @@ surfaced the missing-unit risk.
   seed**; custom: `life_span_min <= life_span_max` (and the same for weight/height); range checks on
   weight/life span; `breed_temperaments` unique on (breed_id, temperament). Plus two the exploration
   earned:
-  - **imperial:metric ratio** (custom) — median ratio within tolerance of 2.205 (weight) / 2.54
-    (height). The source declares no units; this is the tripwire for a silent unit switch.
+  - **unit ratio** (custom, `assert_unit_ratio_plausible`) — median within ±5% of **2.205**
+    (weight, `imperial/metric`) and **2.54** (height, `metric/imperial` — the directions differ; §0).
+    The source declares no units; this is the tripwire for a silent unit switch. It reads the
+    SOURCE and parses independently on purpose: a test that reuses the model's parser agrees with
+    it by construction and cannot catch a bug in it.
   - **junk-tag guard** (custom, warn) — flag any temperament tag over ~3 words. Catches the literal
     tag `"variable depending on ancestry and individual traits"` found in profiling, and the whole
     class of free-text leaking into a controlled vocabulary — not just that one instance.
   - **duplicate breed:** "Caucasian Shepherd Dog" exists twice (ids 70 & 269) → deduped in staging
     keeping the more-complete row; the `unique` test on `breed_id` alone would not have caught it.
+- **Model contracts on gold — enforced exactly at the DAG's edge (M3).** A dbt model is just a
+  SELECT: its output schema is an *accident* of whatever the SQL emits today. Rename
+  `weight_mid_kg` → `weight_midpoint_kg` and `dbt build` goes **green** — then the dashboard dies
+  with `KeyError` in front of whoever is watching. dbt didn't catch it because **dbt cannot see the
+  dashboard**: it isn't a `ref()`, so nothing in the DAG depends on that column.
+  `contract: {enforced: true}` writes the promise down and checks the model's real output against it
+  *before* materializing, so **the failure moves from the consumer to the producer** — from the demo
+  to CI. A contract is a **function signature for a table**.
+
+  **The rule: contract where dbt's knowledge ends.** Not "contract gold" — *contract the boundary*.
+  Everything inside the DAG is already protected for free: rename a `stg_breeds` column and
+  `dim_breeds` fails at compile, because `ref()` makes that dependency visible.
+
+  | model | consumer | contract? |
+  |---|---|---|
+  | `mart_size_class_summary` · `mart_size_vs_lifespan` · `mart_size_class_temperaments` · `mart_metric_correlation` · `mart_data_coverage` | the **dashboard** — outside the DAG | **yes** |
+  | `breed_temperaments` | **humans with SQL** — the brief's "turn the comma list into something queryable" is a deliverable in its own right, and its reader is outside the DAG too. 3 columns, so it's the cheapest contract here | **yes** |
+  | `dim_breeds` | only the marts, via `ref()` | **no** — DAG-protected, and its ~18 columns are the one genuinely expensive contract |
+  | `stg_breeds` · `stg_breed_temperaments` | only marts, via `ref()` | **no** |
+
+  **The cost, stated:** contracts are all-or-nothing — every column needs a declared `data_type`,
+  maintained alongside the model, which is a second place types can drift. That's precisely why the
+  line is drawn at the boundary rather than everywhere: paying it on `dim_breeds` would buy nothing
+  the DAG doesn't already give.
+
+  _(Watch the trap: a constraint on a **view** is silently ignored — `PASS`, no warning. Verified.
+  So contracts only mean anything on the marts, which are tables. On staging they'd be theatre.)_
 - **Two kinds of test, two severities (the deliberate call).** My tests split into **hard
   invariants** — things true by the logic of the data (min ≤ max, PK unique, no `'unknown'` sentinel
   surviving into a numeric) — and **distributional guards**, which encode "this run looks like a

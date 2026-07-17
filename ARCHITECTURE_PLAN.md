@@ -71,7 +71,7 @@ dog-breed-explorer/
 │  │  │  ├─ _staging.yml         # tests + docs for staging
 │  │  │  ├─ stg_breeds.sql       # latest run_date only; parse life_span/weight/height,
 │  │  │  │                       #   sentinels→null, type, dedupe
-│  │  │  └─ stg_breed_temperaments.sql  # split + normalise (lowercase) tags
+│  │  │  └─ stg_breed_temperaments.sql  # split + lower + DISTINCT; excludes the tag sentinel
 │  │  └─ marts/
 │  │     ├─ _marts.yml           # tests + docs for marts
 │  │     ├─ dim_breeds.sql       # clean + derived (size_class, midpoints, life_span_range)
@@ -80,20 +80,25 @@ dog-breed-explorer/
 │  │     ├─ mart_size_vs_lifespan.sql    # grain: breed — scatter-ready (no height: no reader)
 │  │     ├─ mart_metric_correlation.sql  # grain: (metric_a, metric_b) — 3 rows + n_breeds
 │  │     ├─ mart_size_class_temperaments.sql  # grain: (size_class, tag) — count + % of class
-│  │     └─ mart_data_coverage.sql       # one row — 628 total / 586 plotted / what's dropped
+│  │     └─ mart_data_coverage.sql       # one row — 627 total / 585 plotted / what's dropped
 │  │                                     # (mart_size_scaling_fit CUT — an isometry exponent is
 │  │                                     #  not a "fact about dog breeds"; see DECISIONS.md §0)
 │  └─ tests/                     # custom SQL tests (return rows = fail)
-│     ├─ assert_weight_min_le_max.sql        # error — invariants
-│     ├─ assert_lifespan_min_le_max.sql      # error
+│     ├─ assert_weight_min_le_max.sql        # error — invariants          [M2 ✓]
+│     ├─ assert_height_min_le_max.sql        # error — same, for height    [M2 ✓]
+│     ├─ assert_lifespan_min_le_max.sql      # error                       [M2 ✓]
 │     ├─ assert_metric_parsed.sql            # error — a string we didn't understand
-│     │                                      #   (supersedes assert_no_unknown_sentinel)
-│     ├─ assert_metric_shape_known.sql       # warn  — the notation-change flag
+│     │                                      #   (supersedes assert_no_unknown_sentinel) [M2 ✓]
+│     ├─ assert_metric_shape_known.sql       # warn  — the notation-change flag [M2 ✓]
+│     ├─ assert_unit_ratio_plausible.sql     # error — units inferred; parses INDEPENDENTLY
+│     │                                      #   of the model, on purpose  [M2 ✓]
+│     ├─ assert_tag_lowercased.sql           # error — the bridge's genuine red (627) [M2 ✓]
+│     ├─ assert_tag_unique_per_breed.sql     # error — the (breed,tag) grain [M2 ✓]
+│     ├─ assert_source_tag_not_duplicated.sql # warn — source dup the DISTINCT absorbed [M2 ✓]
+│     ├─ assert_tag_not_freetext.sql         # warn  — sentence-as-tag; expects 0 [M2 ✓]
 │     ├─ assert_pct_of_class_sane.sql        # error — catches a bridge-join fan-out
-│     ├─ assert_size_class_bands_cover.sql   # error — seed contiguous, no gaps/overlaps
-│     ├─ assert_no_breed_unbanded.sql        # error — a real weight always finds a band
-│     ├─ assert_unit_ratio_plausible.sql     # error — units inferred, not declared
-│     ├─ assert_tag_not_freetext.sql         # warn  — sentence-as-tag
+│     ├─ assert_size_class_bands_cover.sql   # error — seed contiguous, no gaps/overlaps [M3]
+│     ├─ assert_no_breed_unbanded.sql        # error — a real weight always finds a band [M3]
 │     ├─ assert_unknown_bucket_small.sql     # warn  — distributional guards (M4)
 │     ├─ assert_row_count_stable.sql         # warn
 │     └─ assert_lifespan_null_rate_stable.sql # warn
@@ -177,26 +182,42 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 - [x] Commit: "feat: idempotent ingestion of Dog API into raw layer".
 
 **M2 — dbt staging/silver (Day 3 am)** — build to SPEC.md
-- [ ] **Scaffold + the dev/prod targets** (`dbt_project.yml`, `profiles.yml`). Not optional and not
-      deferrable to M5: `dbt build` resolves a profile before it compiles anything, so the two
-      targets exist from dbt's first run. **dev is the default** (`dogs_dev.duckdb`), prod is
-      `dogs.duckdb`. M5 doesn't create the split — it only picks `--target prod`. Schema + the
-      ingest.py/dbt shared-path seam are in SPEC.md ("dbt targets"). *(Scored: "parameterize so it
-      can run against both a dev and a prod target" — it was in the folder tree but no milestone
-      owned it.)*
-- [ ] `_sources.yml` → raw.breeds (**and `stg_breeds` filters to the latest `run_date`** — see
-      CLAUDE.md/DECISIONS.md §1; without it, a second local run double-counts every breed).
-- [ ] `stg_breeds.sql`: the metric range parser (handles simple
-      `X-Y`, sex-specific `Male:…;Female:…`, and `'unknown'`→NULL), type everything, drop dead
-      fields (species_id, bred_for, perfect_for, country_codes), **dedupe the Caucasian Shepherd**
+- [x] **DONE — Scaffold + the dev/prod targets** (`dbt_project.yml`, `profiles.yml`). Both connect
+      (`dbt debug` green on each). **dev is the default** so a bare `dbt build` can't touch the
+      serving copy; prod takes a deliberate `--target prod`. Materialization/schema set per LAYER in
+      `dbt_project.yml` (staging=view→`main_staging`, marts=table→`main_marts`; dbt *concatenates*
+      the custom schema, so `staging` not `main_staging`). **Run dbt from `dbt/`, via `.venv`.**
+      *(Scored: "parameterize for dev and prod" — was in the folder tree but no milestone owned it.)*
+- [x] **DONE — `flags.warn_error_options.error: [NodeNotFoundOrDisabled]`** in `dbt_project.yml`.
+      dbt DROPS a test whose `ref()` doesn't resolve, with only a warning and exit 0 — a test that
+      silently doesn't run is worse than no test. Scoped to that one event on purpose: blanket
+      `--warn-error` would escalate our `severity: warn` tests too and destroy the warn/error split.
+      Verified: typo'd ref → exit 2; warn-severity test → exit 0.
+- [x] **DONE — `_sources.yml`** → raw.breeds, + 4 not_null tests + `source freshness` (warn @36h,
+      off the `loaded_at` M1 writes — a daily cron means >36h is a missed run).
+- [x] **DONE — `stg_breeds.sql`** + its contract, green. Parser = extract EVERY number, take
+      min/max (shape-blind: `X-Y`, `Male:…;Female:…`, and `"12 years - 13 years"`/`"3-5kg"` all work
+      with no branching). `'unknown'`→NULL **before** casting. Deduped the Caucasian Shepherd
       (`qualify row_number() over (partition by breed_name order by n_missing_fields, breed_id) = 1`
-      — the two rows TIE on completeness, so `breed_id` is what actually decides; keep it
-      deterministic or the bridge changes between runs).
-      Tests with it: `assert_weight_min_le_max`, `assert_lifespan_min_le_max`,
-      **`assert_metric_parsed`** (error — supersedes `assert_no_unknown_sentinel`),
-      **`assert_metric_shape_known`** (warn — the notation flag), `assert_unit_ratio_plausible`
-      (error, median ratio in [2.095, 2.315] weight / [2.413, 2.667] height).
+      — the rows TIE at 2 empty fields, so `breed_id` decides → id 70 survives).
+      **Verified:** raw 628 → stg **627**; weight parsed **625**; life_span **587**; Leonberger
+      `'male: 50-77; female: 41-64'` → **41.0/77.0** envelope. `PASS=17 WARN=0 ERROR=0`.
+      **The loop ran for real:** naive first pass → `assert_metric_parsed` **FAIL 4** (Langqing +
+      Mongrel, weight AND height = 'unknown'), `unique(breed_name)` **FAIL 1** (Caucasian ×2) →
+      fixed → green. `unique(breed_id)` passed throughout: it *cannot* see that dupe (ids 70/269
+      are distinct), which is why the name test exists.
+      **It also caught SPEC being wrong:** `assert_unit_ratio_plausible` failed on its first run —
+      "imperial:metric ≈ 2.54 (height)" is impossible; height's 2.54 is *metric/imperial* (cm > in),
+      only weight's 2.205 runs imperial/metric. Test now measures each in its own direction.
+      **Mutation-checked** the vacuous greens (inverted predicate → FAIL 625/587/625), so no test
+      is green-but-unproven.
 - [ ] `stg_breed_temperaments.sql`: split comma list, **lowercase+trim** each tag (casing fix).
+      Contract first: `unique(breed_id, temperament)` (custom — no dbt_utils), not_null both,
+      `relationships` → stg_breeds, **`assert_tag_lowercased`** (error — the genuine red: **627 tag
+      rows carry uppercase**, so a model without `lower()` fails loudly), `assert_tag_not_freetext`
+      (warn). **No `DISTINCT`** — verified NO breed repeats a tag, so it would make the unique test
+      vacuous; let the test catch a future dup instead (same rule as nulling only the *known*
+      sentinel).
 - [ ] Commit per meaningful step. This is the hardest piece — understand the parser line by line.
 
 > **The TDD loop runs INSIDE M2 and M3 — one model + its tests is one unit of work.** For each
@@ -232,13 +253,21 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       Tests with it: unique(size_class, temperament), `assert_pct_of_class_sane`
       (`breed_count <= breeds_in_class`, pct in (0,100]) — the inequality is what catches a
       fan-out in the bridge join.
-- [ ] `mart_data_coverage` — one row: what every chart drops (628 total, 586 plotted, 42 excluded).
+- [ ] `mart_data_coverage` — one row: what every chart drops (**627** total, **585** plotted, 42
+      excluded; **626** with a temperament — Mongrel's tag is a sentinel).
       The dashboard prints it beside each chart. Life-span coverage is **uneven by class** (toy
       29/40 vs giant 59/59), which is a real bias in the headline chart — so `breeds_with_life_span`
       goes next to the bars too.
 - [ ] **CUT: `mart_size_scaling_fit`** and the height-vs-weight curve. An isometry exponent is not a
       fact about a dog breed — the rule is *descriptive fact → gold, inferential cleverness →
       DECISIONS.md §0*. Don't rebuild it.
+- [ ] **`contract: {enforced: true}` on the models the DAG can't protect** — the 5 marts the
+      dashboard reads (`mart_size_class_summary`, `mart_size_vs_lifespan`,
+      `mart_size_class_temperaments`, `mart_metric_correlation`, `mart_data_coverage`) **+
+      `breed_temperaments`** (the brief's "queryable" deliverable — its reader is a human with SQL,
+      also outside the DAG; only 3 columns). **NOT `dim_breeds`** (~18 columns, read only via
+      `ref()` → already DAG-protected) and NOT staging (**a constraint on a view is silently
+      ignored — verified**). Rationale + the cost in DECISIONS.md §3.
 - [ ] Business logic lives HERE, not in the dashboard.
 
 **M4 — Pipeline-level guards + docs (Day 3 pm)**

@@ -11,7 +11,8 @@ Business logic lives in dbt gold; the dashboard stays thin.
   or they silently poison numeric parsing.
 - **`life_span` is just `"X-Y"`** (no "years" suffix, unlike the brief's claim), 6.4% null.
 - **Duplicate breed:** "Caucasian Shepherd Dog" on ids 70 and 269 → conscious dedupe decision.
-- **temperament casing:** 66 tags → 46 lowercased → normalise before grouping.
+- **temperament casing:** 66 tags → 46 lowercased (**45 after the sentinel is excluded**) →
+  normalise before grouping. 627 tag rows carry uppercase — a model without `lower()` fails loudly.
 - **Dead fields:** `species_id` (constant), `bred_for` + `perfect_for` (100% null) → drop.
   `country_code` == `country_codes` → keep one.
 - **LLM bonus must NOT use `bred_for`** (empty). Derive from `temperament`/`description` instead.
@@ -58,6 +59,37 @@ models:
 
 Note dbt **concatenates** custom schemas onto the target schema by default (`main` + `staging` =
 `main_staging`), which is why the config says `staging`, not `main_staging`.
+
+### A dropped test is worse than no test — `warn_error_options` (built in M2)
+
+```yaml
+flags:
+  warn_error_options:
+    error:
+      - NodeNotFoundOrDisabled
+```
+
+**dbt DROPS a test whose `ref()` doesn't resolve, with only a warning and exit 0.** Typo a model
+name, or rename one and miss a test file, and that test simply stops existing — CI stays green and
+you believe you're covered. Verified: a typo'd ref → warning, exit 0; with this flag → **exit 2**.
+
+**Scoped to that one event, deliberately.** A blanket `--warn-error` would also escalate our
+`severity: warn` *tests* (`assert_metric_shape_known`, `assert_source_tag_not_duplicated`, the three
+distributional guards) into build failures, destroying the warn/error split on purpose. Verified:
+with the flag, a warn-severity test still exits 0.
+
+The line it draws, worth stating plainly: **a broken wire is an error; unexpected data is a warning.**
+One means the pipeline is lying about its coverage; the other means the world changed.
+
+**Corollary — watch `Found N data tests`.** It is the only cheap check that nothing silently
+vanished. Post-M2 it must read **26**.
+
+### Source freshness (built in M2)
+
+`_sources.yml` declares `loaded_at_field: loaded_at` (the column ingestion writes) with
+`warn_after: {count: 36, period: hour}`. A daily cron means >36h without a run **is** a missed run.
+Surfaced by `dbt source freshness`, a separate command from `dbt build` — **warn only**: a stale
+local file is a signal for me, not a reason to fail a build.
 
 ## dbt targets: **dev and prod, parameterized** (a scored requirement — build it)
 
@@ -127,7 +159,14 @@ only secret and never appears here.
 | temperament_raw | VARCHAR | keep raw string for reference/enrichment |
 | image_url | VARCHAR | image.url (nullable, 14.3% null) |
 | loaded_at | TIMESTAMP | from raw |
+| weight_raw | VARCHAR | `weight.metric` after `'unknown'`→NULL — **the string the parser was handed** |
+| height_raw | VARCHAR | `height.metric` after `'unknown'`→NULL |
+| life_span_raw | VARCHAR | `life_span` after `''`→NULL |
 | n_missing_fields | INTEGER | count of null/empty fields on the raw row — **dedupe tiebreak only** |
+
+The three `*_raw` columns are not cosmetic: `assert_metric_parsed` needs them to ask *"you were
+handed a string — where's the number?"* without re-deriving what a sentinel is. Free (staging is
+a view) and they make every parse traceable back to its input.
 
 **`n_missing_fields`** exists for exactly one job: ordering the dedupe. It is the count of
 null/empty values across the source fields on that raw row:
@@ -216,8 +255,29 @@ Raw holds 628; `dim_breeds` holds **627**. Every count below is post-dedupe.
 |---|---|---|
 | breed_id | INTEGER | FK → dim_breeds |
 | temperament | VARCHAR | **lowercased + trimmed** tag (group on this) |
-| temperament_display | VARCHAR | title-cased for the dashboard (optional) |
-Built by splitting `temperament_raw` on ',', trimming, lowercasing. ~5.6 rows/breed.
+| temperament_display | VARCHAR | sentence-cased for the dashboard. **Never group on this** |
+
+Built by splitting `temperament_raw` on ',', trimming, lowercasing. **Verified: 3,538 rows · 45
+distinct tags · 626 of 627 breeds · 5.6 tags/breed.**
+
+**The temperament sentinel (decided in M2).** Breed 536 "Mongrel" carries one tag:
+`"Variable depending on ancestry and individual traits"`. That is not a temperament — it is the
+API saying *not applicable*, and the evidence is on the row itself: **the same breed's
+`weight.metric` is the literal string `'unknown'`**, which we already null. Two spellings of "we
+don't know" on one row; treating one as a sentinel and shipping the other as a real tag would be
+incoherent. **It is excluded in `stg_breed_temperaments` by literal**, exactly like `'unknown'` —
+only the ONE instance profiling found, never "anything over 3 words" (that would make
+`assert_tag_not_freetext` vacuous). So Mongrel has no weight AND no tags, which is the truth, and
+the test reads **0** instead of warning forever about a row we'd already decided to accept.
+Consequence, stated: **breeds_with_temperament = 626, not 627.**
+
+**`select distinct` — and why the severity moved.** Case-folding can *create* a duplicate that
+isn't in the source (`"Loyal, loyal"` → `'loyal','loyal'`), so the risk is ours, not the API's.
+The bridge absorbs it with `distinct` rather than failing the daily cron over one breed. Absorbing
+*silently* would be the wrong half of the trade, so the signal moves to
+`assert_source_tag_not_duplicated` (**warn**), which re-derives the split from `stg_breeds` —
+**a test downstream of the fix cannot see what the fix hid.** Once `distinct` guarantees the grain,
+a repeated source tag is drift, not broken data → warn, per the severity rule below.
 
 ## The duplicate-breed decision
 Caucasian Shepherd Dog appears on ids 70 and 269 (same origin, genuine dupe).
@@ -262,13 +322,27 @@ artifact, not two breeds.
    guaranteed wrong), a new notation *might* parse perfectly — erroring would block a good run.
    Warn puts a human in front of it. Follows the rule: invariants error, "the world changed" warns.
 6. range check: `weight_mid_kg` between ~0.5 and ~100 when not null.
-7. `breed_temperaments`: `relationships` breed_id → `dim_breeds`, **plus `unique` on the
-   combination (breed_id, temperament)** — load-bearing: a duplicated tag would double-count any
-   temperament aggregate (and silently inflate lift if the pair mart is ever built).
-7b. custom `assert_tag_not_freetext` (**warn**): flag any tag longer than ~3 words. Profiling found
-   the literal tag `"variable depending on ancestry and individual traits"` — a sentence in a
-   controlled vocabulary. Catches the whole class, not that one instance.
-8. `dim_breeds`: assert row count == distinct breeds after dedup (catches the dup regressing).
+7. `breed_temperaments`: `relationships` breed_id → `dim_breeds`, plus custom
+   **`assert_tag_unique_per_breed`** — `unique` on the COMBINATION (breed_id, temperament), so it
+   must be a singular test (dbt's built-in `unique` is single-column; dbt_utils isn't worth a
+   dependency for one test). With `distinct` in the model this guards the **grain** — it fires if
+   anyone deletes that line or a join fans out — while the *source* side is covered by 7c.
+7b. custom `assert_tag_lowercased` (**error**): no tag differs from its own `lower()`/`trim()`.
+   **The genuine red of M2's bridge: 627 rows failed before `lower()` landed.** Without it,
+   `GROUP BY temperament` splits `intelligent` (536 breeds) across two casings — two plausible,
+   both wrong.
+7c. custom **`assert_source_tag_not_duplicated`** (**warn**): re-derives the split from
+   `stg_breeds` to see duplicates the bridge's `distinct` already absorbed. Reading the bridge
+   would be structurally incapable of firing.
+7d. custom `assert_tag_not_freetext` (**warn**): flag any tag longer than ~3 words. **Expected 0** —
+   the one known instance is excluded as a sentinel (see the bridge section), which is what makes
+   this a signal rather than a permanent WARN 1 nobody reads. Threshold `>3` sits in an empty gap:
+   the vocabulary is 44 one-word tags + `'eager to please'` (3 words); the sentinel was 7.
+8. **`unique` on `stg_breeds.breed_name`** — THE test that catches the Caucasian Shepherd duplicate.
+   `unique(breed_id)` **cannot**: ids 70 and 269 are perfectly distinct. Went red on exactly 1 row
+   before the dedupe landed. (Supersedes the vaguer "row count == distinct breeds after dedup".)
+8b. `assert_height_min_le_max` — the same invariant as weight, for height. Not in the original list;
+   height runs the identical code path, so omitting it left the parser half-covered.
 9. custom `assert_unit_ratio_plausible`: units are inferred, not declared, so this is the tripwire
    for a silent source unit change (e.g. metric quietly becoming pounds — every number stays valid,
    every other test passes, the whole dashboard is wrong by 2.2×).
@@ -380,7 +454,7 @@ on `size_class` is drift waiting to happen.
   | no weight | 2 → `size_class = 'unknown'` |
   | no life span | **40** → excluded from every life-span mean |
   | **scatter needs both → dropped** | **42 → 585 plotted** |
-  | no temperament | 0 → the bridge covers all 627 (3,539 tag rows) |
+  | no temperament | **1** (Mongrel — its tag is a sentinel, excluded) → bridge covers **626** of 627, 3,538 rows |
 
   **Why this is not cosmetic:** the missing life spans are *not evenly spread*. **Toy has 29 of 40**
   (27.5% missing); **giant has 59 of 59** (0%). So the toy bar at 13.3 yr rests on 72% of toy breeds

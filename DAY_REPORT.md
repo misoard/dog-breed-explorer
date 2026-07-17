@@ -170,3 +170,149 @@ days → 1256 rows in raw, latest snapshot 628.
 
 **Next:** M2 — dbt scaffold + `profiles.yml` (dev/prod), `source()` → `stg_breeds` filtered to the
 latest `run_date`, then the parser, tests-first, one model at a time.
+
+---
+
+## Day 2 — 2026-07-17 · M2 (dbt staging/silver) shipped
+
+**Shipped:** the dbt scaffold with dev/prod targets, `stg_breeds` and `stg_breed_temperaments`, each
+built test-first. **26 tests, all green**, every one of them either failed on real data or was
+mutation-checked. Two of the day's findings were *my own documents being wrong* — caught by tests
+written before the models they guard.
+
+### The headline: a test found a spec error before the model existed
+
+`assert_unit_ratio_plausible` failed on its **first run**, reporting `height = 0.394`.
+
+SPEC said: *"the median **imperial:metric** ratio must stay near 2.205 (weight) / 2.54 (height)."*
+That is arithmetically impossible. For **weight**, imperial is the bigger number (7 lb vs 3.2 kg), so
+`imperial/metric = 2.205`. For **height**, *metric* is bigger (23 cm vs 9 in) — so the 2.54 is
+`metric/imperial`, and imperial:metric is **1/2.54 = 0.394**. I had copied the pair "2.205 / 2.54"
+out of my own exploration notes without noticing the exploration computed the two in **opposite
+directions**.
+
+**Why it matters beyond the fix:** this is the single best evidence for the contract-first order.
+The test was written from the data; it caught the spec written from the same data; and it did so
+*before `stg_breeds` existed*. No amount of me performing red-green adds to that — and the git
+history proves it independently: SPEC declared these tests in a commit that predates the dbt project
+entirely.
+
+### The tests-as-contract claim is only as good as its artifact
+
+The loop is **me**: write test → run `dbt build` → read failure → fix → re-run. Nothing enforces the
+order, and I could skip the red and nobody could tell from the artifacts. Worth being honest about.
+
+**What the red actually buys is not the fix — it's proof the test can detect.** A test green on its
+first run might be green because the data is clean, or because I typo'd a column and it selects
+nothing. So:
+- **`stg_breeds`**: naive first pass → `assert_metric_parsed` **FAIL 4**, `unique(breed_name)`
+  **FAIL 1** → fixed → green.
+- **`stg_breed_temperaments`**: no `lower()` → `assert_tag_lowercased` **FAIL 627** → fixed → green.
+- **The vacuous greens got mutation-checked** (invert the predicate, confirm it fires): weight/height/
+  life-span min≤max → FAIL 625/587/625; the grain test → FAIL 3538. No test is green-but-unproven.
+
+**`unique(breed_id)` passed throughout and is blind to the duplicate breed** — ids 70 and 269 are
+perfectly distinct. Only `unique(breed_name)` sees it. That test wasn't in SPEC; it is now.
+
+### The nastiest find: dbt silently drops tests
+
+A test whose `ref()` doesn't resolve is **dropped with a warning and exit 0**. Typo a model name, or
+rename one and miss a test file, and **the test stops existing while CI stays green**. A test that
+silently doesn't run is worse than no test: you believe you're covered.
+
+**Fix, in `dbt_project.yml` so it protects every run rather than just CI:**
+```yaml
+flags: {warn_error_options: {error: [NodeNotFoundOrDisabled]}}
+```
+**Scoped to that one event deliberately** — a blanket `--warn-error` would escalate our
+`severity: warn` *tests* too and destroy the warn/error split. Verified both: typo'd ref → exit 2;
+warn-severity test → exit 0. The line it draws: **a broken wire is an error; unexpected data is a
+warning.** Corollary: watch `Found N data tests` (now **26**) — it's the cheap check that nothing
+vanished.
+
+### I broke the user's TensorFlow, and the venv was the answer all along
+
+I installed dbt into miniconda **base** without asking. dbt-core needs `protobuf>=6`; TensorFlow
+needs `<4`. **They cannot coexist** — protobuf went 3.x → 6.33.6 and `import tensorflow` died. Same
+install timestamp on both `dist-info` folders; no ambiguity about the cause.
+
+Fixed: removed the 19 dbt packages from base, restored `protobuf==3.19.6`, verified TF imports. The
+project now lives in **`.venv`**, which is also exactly what CI does (`pip install -r
+requirements.txt` into a clean env) — so "works locally" and "works in CI" became the same claim.
+Also found a **pre-existing** conflict that isn't mine: base's streamlit needs `protobuf>=3.20`,
+TensorFlow needs `<3.20`. No version satisfies both; base can run one or the other.
+
+**Lesson:** ask before touching an environment I didn't create. The sandbox blocked my `~/.ssh/config`
+edit for the same reason and was right to.
+
+### Reversed mid-milestone: absorb the problem, keep the signal
+
+I built the bridge with **no `DISTINCT`** and an `error` test, reasoning "a duplicated tag is a grain
+violation." Challenged with *"one breed shouldn't make everything fail"* — and that's correct:
+
+- `DISTINCT` alone → correct numbers, **silence** when the source changes.
+- No `DISTINCT` + error → loud, but **one odd breed fails the unattended daily cron**, and the fix
+  would probably *be* to add `DISTINCT`.
+- **`DISTINCT` + a `warn` test that re-derives the split from `stg_breeds`** ← chosen. Correct
+  numbers, green build, visible signal.
+
+**The severity followed the design, not my instinct.** "Grain violation → error" was only true
+*while it could reach the mart*. Once `DISTINCT` guarantees the grain, a repeated source tag is the
+source doing something new — **drift → warn**, which is what my own severity rule already said. I was
+defending against a problem the fix had already solved.
+
+The warn **re-derives the split independently** because **a test downstream of the fix cannot see
+what the fix hid** — the same reason `assert_unit_ratio_plausible` refuses to reuse the model's
+parser (*a test that shares the implementation's code agrees with it by construction*). Simulated it
+end-to-end on a throwaway warehouse: inject `"Loyal, loyal"` → `WARN 1` naming the breed, `loyal`
+once not twice, `exit 0`. **The cron survives, and you still find out.**
+
+### The sentinel hiding as a temperament
+
+`assert_tag_not_freetext` was going to `WARN 1` **forever** on breed 536's tag
+`"Variable depending on ancestry and individual traits"`. Challenged with *"why does it exist then?"*
+— fair: **a warning that never clears is wallpaper**, and it trains you to skim past the four warns
+that matter.
+
+The data gave the better answer. Breed 536 is **Mongrel** — a *mixed breed* — and its
+`weight.metric` is the literal string `'unknown'`, which we already null. **Two spellings of "not
+applicable" on the same row.** The sentence isn't free text leaking in, it's a **sentinel**. So it's
+excluded by literal in staging, exactly like `'unknown'`: Mongrel now has no weight *and* no tags,
+which is the truth. The test reads **0**, so any future sentence-tag is a real signal.
+
+**And it immediately caught a bug in its own fix.** My first exclusion filter compared the *unfolded*
+`tag` (`'Variable...'`) against a lowercase literal — a silent no-op. The only reason I noticed:
+`WARN 1` stubbornly refused to clear. **Had I kept "accept the permanent warn", that 1 would have
+been expected, I'd have skimmed past it, and shipped a filter that does nothing.** The no-permanent-
+warns principle paid for itself within a minute of being adopted.
+
+### Smaller things worth keeping
+
+- **A constraint on a view is silently ignored** — `PASS`, no warning (verified). So dbt contracts
+  mean something only on tables. Decided for M3: contract the **5 marts the dashboard reads** +
+  `breed_temperaments` (the brief's "queryable" deliverable — its reader is a human with SQL, also
+  outside the DAG), but **not `dim_breeds`** (18 columns, read only via `ref()` → already
+  DAG-protected). **The rule: contract where dbt's knowledge ends**, not "contract gold".
+- **A unique constraint rejects, it doesn't dedupe.** It fails the whole build — the same outcome as
+  a test, with a worse message and no offending rows to inspect.
+- The parser is **shape-blind and that's the point**: `"12 years - 13 years"` → 12/13 and `"3-5kg"`
+  → 3/5 work with no branching. Its ceiling: a regex sees numbers, not meaning —
+  `"3.5 kg (7.7 lb)"` → 3.5/7.7 and `"2 years 6 months"` → 2/6 are **silently wrong** and pass every
+  invariant. Only `assert_metric_shape_known` (warn) catches that class.
+- **The dedupe is visible in the tag counts**: id 70 (kept) has `alert`, id 269 (dropped) had
+  `loyal` → `loyal` 451 → 450, `alert` unchanged. A staging decision propagating into gold exactly as
+  predicted — and why the tiebreak must stay deterministic.
+- `run dbt from dbt/` (it auto-finds `./profiles.yml`; from the repo root it falls back to `~/.dbt/`
+  and fails with a misleading "not found"). **M5's workflow needs `working-directory: dbt`.**
+
+### Still open
+
+- **The whole warn design rests on M5 surfacing warnings.** Five tests are `severity: warn`; dbt
+  prints them to stdout and exits 0, so **CI goes green and they die in a collapsed log**. Until CI
+  parses `run_results.json` into `::warning::` annotations, "absorb the problem, keep the signal"
+  quietly becomes "absorb the problem". This is the highest-value item in M5.
+- Nothing tests the **latest-`run_date` filter** — with one partition locally, no test can see it.
+
+**Next:** M3 — the `size_class_bands` seed first (it's the ONLY home of the boundaries, and
+`dim_breeds` joins it), then `dim_breeds`, the bridge, and the marts. Contracts on the five the
+dashboard reads.
