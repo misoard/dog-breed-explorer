@@ -585,11 +585,84 @@ importing the min/max logic.
 
 ## 4. Version control — **GitHub**
 
-- **Chose:** GitHub, _[public / private + viewer access]_.
+- **Chose:** GitHub, **private + read access for reviewers**. Private because the repo quotes the
+  brief and is a worked solution to Heyra's take-home — making it public would put the answer in
+  reach of the next candidate, which is Heyra's call to make, not mine. The brief's own wording —
+  "submit repo link with **read access**" — points the same way.
 - **Why / discipline:** meaningful **incremental commit history** (one commit per milestone, not
   one giant final commit); secrets kept out of the repo (API key in `.env` gitignored locally,
   GitHub Actions secret in CI); a README another engineer could follow.
-- **With more time:** _[branch protection, PR templates]_
+
+### Branch protection on `main`, with **no admin bypass** — the deliberate ceremony
+
+**Chose:** a ruleset on `main` requiring a **pull request** with **passing status checks**, force
+pushes blocked, and **admin bypass OFF**. So every change — including mine — goes
+branch → PR → CI → merge.
+
+**Why, when I'm the only developer:** because **a CI that can be ignored isn't one.** Without this,
+a red check leaves the Merge button green: the pipeline *informs* but doesn't *enforce*, which is
+half a thing. And a rule the repo owner can bypass is theatre — if I can push past it, it protects
+nothing and proves nothing. It has to bind me.
+
+The stronger reason is that **this is a case study, not a hobby repo.** The artifact is meant to be
+read as something a team could pick up; "I skipped the guardrail because I'm solo" is a weaker
+sentence than "I set it up the way a team would need it". The whole project is graded on judgement
+about what a real deployment requires — and this is the cheapest possible demonstration of it: three
+clicks, and it makes every other CI claim in this document true rather than aspirational.
+
+**Traded off, honestly:** real ceremony for a solo developer. `/ship` can no longer touch `main`; the
+loop becomes branch → `/ship` → PR → watch CI → merge → `git switch main && git pull`. That's five
+steps where one used to do, and the local-main-is-stale trap is a genuine papercut. For a POC it is
+arguably over-process — I'd accept that criticism, and I'd still take it, because the alternative is
+a green badge that means nothing.
+
+**It also fixed a real gap rather than performing one:** `ci.yml` triggers on `pull_request`, so
+before this the PR-triggered half of CI would never have fired at all — I'd have been committing
+straight to `main` and shipping a workflow that had literally never run against a PR.
+
+#### The settings, and why each is what it is
+
+Ruleset **`main: PR + passing CI required`** (named so the *rejection message* explains itself —
+the name is what git prints when it blocks a push; `main` or `Ruleset 1` would teach the next person
+nothing). Enforcement: **Active** — `Evaluate` is a dry run that blocks nothing, which would be the
+same theatre as no rule at all.
+
+| setting | value | why |
+|---|---|---|
+| Require a pull request | ✅ | the point |
+| **Required approvals** | **0** | **GitHub will not let you approve your own PR.** At 1, with bypass off, I could never merge anything again — the rule would brick the repo. 0 still enforces "a PR must exist and CI must be green"; it just doesn't ask me to rubber-stamp myself |
+| Require approval of most recent push | ❌ | *"approved by someone other than the person who pushed it"* — same lockout, for the same reason |
+| Require branches up to date | ❌ | forces a rebase onto latest `main` before merge, so CI tests exactly what lands. Correct when `main` moves under you; pure friction as the only contributor. **The first thing I'd turn on for a second developer** |
+| Require conversation resolution | ❌ | no conversations on a solo PR |
+| Block force pushes | ✅ | `main` was force-pushed three times early on (history rewrites). Fine then, never again |
+| Bypass list | **empty** | the whole argument. A rule its author can skip protects nothing |
+
+**Allowed merge method: REBASE ONLY** — and this one follows directly from the commit rule in
+CLAUDE.md ("the history reads like the milestones, not like a changelog of an afternoon's edits").
+Given a branch with `feat: M5 — CI + cron` and `docs: record M5`:
+
+| method | what lands on `main` | verdict |
+|---|---|---|
+| Merge commit | both commits **+** `Merge pull request #1 from misoard/m5-ci` | **adds** a commit I didn't write, that records only that a merge occurred. That is the changelog noise the rule exists to prevent |
+| Squash | both commits fused into **one** | **removes** commits I did write. The `feat`/`docs` split is deliberate — one logical step each — and squashing undoes it on the way in |
+| **Rebase** | both commits, replayed linearly, new parents | **lands exactly what `/ship` crafted.** Nothing added, nothing fused |
+
+Squash earns its keep on branches full of `wip` / `fix typo` / `actually fix it` — it hides mess.
+**`/ship` doesn't make mess** (the tests-first loop happens *inside* a commit, never as commits), so
+there's nothing to hide and squashing would only destroy structure. Restricting to rebase alone also
+removes the choice at merge time, which is the point: a decision made once in settings beats a
+decision made at 6pm by whoever is merging.
+
+**Chicken-and-egg, worth knowing:** GitHub's "require status checks" picker only offers checks it has
+*already seen run*. The check is the **job's** `name:` (`ingest + dbt build + test`) — not the
+workflow's (`CI`), not the filename. So the ruleset goes on first *without* the check, the first PR
+runs CI, and the check is added afterwards. A nice accident of ordering: the first PR runs with CI
+advisory, and the second with CI as a gate — the difference between "informs" and "enforces",
+demonstrated on the same repo half an hour apart.
+
+- **With more time:** PR templates, a CODEOWNERS file, and `dbt build --select state:modified+`
+  against a stored manifest so a PR only rebuilds what it touched (irrelevant at 9 models; the
+  right answer at 900).
 
 ## 5. CI / CD — **GitHub Actions**
 

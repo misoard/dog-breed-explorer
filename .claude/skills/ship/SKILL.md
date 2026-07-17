@@ -62,30 +62,44 @@ on quotes and em-dashes.
 _(Why these rules exist: M0–M1 produced 10 commits — 8 of them one afternoon of doc churn — with
 17–31-line essay messages, for 2 real milestones. Squashed to 4.)_
 
-## 4. Branch — only if the user asks
+## 4. Branch — ALWAYS. `main` is protected.
 
-Default is the **current branch**. Never create or switch branches on your own; a branch the user
-didn't ask for is a commit they can't find.
+**Never commit to `main`.** A branch ruleset on `main` requires a PR with passing checks, and
+**admin bypass is off on purpose** — the rule binds the repo owner too, or it proves nothing
+(DECISIONS.md §4). A push to `main` will simply be **rejected by the remote**.
 
-If the user asks for a new branch ("/ship to a new branch", "/ship on a feature branch"):
+**If the current branch is `main`, create one before staging anything:**
 
 ```bash
-git switch -c <branch>          # branches off current HEAD, keeping the staged work
+git switch -c <branch>          # branches off main, carrying the uncommitted work with it
 git push -u origin <branch>     # -u sets upstream so later pushes are a bare `git push`
 ```
 
-- **Name it after the work**, not the tool: `m2-dbt-staging`, `m3-marts`. Ask if it's ambiguous.
+- **Name it after the work**, not the tool: `m5-ci`, `m6-dashboard`, `fix-parser-sentinel`.
+  Derive it from what changed; ask only if genuinely ambiguous.
+- **Already on a non-`main` branch?** Stay on it. Don't nest a branch off a branch.
+- **Uncommitted work carries over** with `switch -c` — so branch first, then commit onto it.
 - A new branch has **no remote counterpart, so there is no divergence and never a force push** —
-  the rejected-push problem below only exists on a rewritten `main`.
-- **Already on a non-main branch?** Don't nest a new one off it unless asked — just commit there.
-- **Uncommitted work carries over** to the new branch with `switch -c`, which is what we want:
-  create the branch first, then commit onto it.
-- Tell the user the branch name and the PR URL that GitHub prints, if they want one. Do **not**
-  open a PR unless asked.
+  the rejected-push problem below only ever applies to a rewritten `main`.
 
-> Worth knowing: milestone branches + PRs into `main` are also what make the M5 CI actually fire —
-> a `on: pull_request` workflow needs a PR to run against. Committing straight to `main` means the
-> PR-triggered half of CI never demonstrates itself.
+**Then hand the user the PR link.** `git push -u` on a new branch makes the remote print it:
+
+```
+remote: Create a pull request for 'm5-ci' on GitHub by visiting:
+remote:      https://github.com/misoard/dog-breed-explorer/pull/new/m5-ci
+```
+
+**Surface that URL** — it's the one thing the user needs next. Do **NOT** open the PR and do **NOT**
+merge: the PR *is* the review checkpoint, and an agent that opens and merges its own PRs has
+reinvented pushing to `main` with extra ceremony. The user opens it, watches CI, and merges.
+
+**After they merge, their local `main` is behind** — the merge happened on GitHub. Remind them:
+
+```bash
+git switch main && git pull      # BEFORE starting the next milestone
+```
+
+Skipping this forks the next branch off a stale base, which is the classic first-PR trap.
 
 ## 5. Push — never force without asking
 
