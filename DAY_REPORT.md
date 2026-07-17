@@ -173,7 +173,7 @@ latest `run_date`, then the parser, tests-first, one model at a time.
 
 ---
 
-## Day 2 — 2026-07-17 · M2 (dbt staging/silver) + M3 (marts/gold) shipped
+## Day 2 — 2026-07-17 · M2 (dbt staging/silver) + M3 (marts/gold) + M4 (guards + docs) shipped
 
 **Shipped:** the dbt scaffold with dev/prod targets, `stg_breeds` and `stg_breed_temperaments`, each
 built test-first. **26 tests, all green**, every one of them either failed on real data or was
@@ -484,8 +484,161 @@ But sitting three paragraphs from "n=58 giants" it now reads as a contradiction,
 - Both M2 items stand: **warns still die in a collapsed log until M5**, and nothing tests the
   latest-`run_date` filter.
 
-**Next:** M4 — pipeline-level guards (the three distributional warns: `assert_unknown_bucket_small`,
-`assert_row_count_stable`, `assert_lifespan_null_rate_stable` — all three already listed as `todo` by
-the audit's PROMISES section, which is the point of it) and `dbt docs generate` for the lineage
-graph. The SPEC-completeness reconciliation this line used to call for **already shipped**, as
-PROMISES.
+---
+
+## M4 — the guard that would have passed for the wrong reason
+
+**Shipped:** the distributional guards, `dbt docs generate` — and then a **test audit that deleted a
+third of the suite**. The count went **65 → 68 → 35**, and the last move is the one worth reading:
+`PASS=45 WARN=0 ERROR=0`. Live: `unknown` **2/627 = 0.32%** (≤1), life-span nulls **40/627 = 6.38%**
+(≤10), and `assert_no_breed_lost` reconciling **627 == 627** exactly.
+
+M4 was supposed to be "add three guards and generate the docs". It turned into the milestone where
+**two of the three guards I'd just written didn't survive contact with the question "can this
+actually fail?"** — one was rebuilt from scratch as an exact reconciliation, and 33 tests across the
+project were deleted outright.
+
+**The finding, and it's the whole milestone:** `assert_row_count_stable` compares `dim_breeds`
+against `expected_breed_count`. That var is **627**. The plan's own M4 checklist specified
+**"row count 628 ±5%"**, and DECISIONS §3 described the guard as *"row count ~628"*.
+
+627 sits **~1 breed inside** a 628-based tolerance ([597, 659]). So had the guard been built to the
+spec as written, it would have gone **green forever while comparing against a number the pipeline
+never produces** — passing for the wrong reason, and passing *convincingly*. The margin that hid it
+is smaller than the rounding on the tolerance itself.
+
+This is the fourth milestone in a row where **628 (raw) and 627 (gold) got mixed**, and it keeps
+landing in the same place: any figure computed before the Caucasian Shepherd dedupe. The rule
+CLAUDE.md already states — *628 is raw; `dim_breeds` is 627; never mix them* — is apparently not
+something you can absorb once. It has to be checked every time a doc quotes a count.
+
+**A guard that passes for the wrong reason is worse than no guard.** No guard is a known gap; a
+green one is a *belief*. This is the same lesson as M2's "a dropped test is worse than no test",
+arriving from the opposite direction: there, the test vanished and CI stayed green; here, the test
+runs and stays green. Both end at a build that reports success while proving nothing.
+
+### `vars`, not a seed — the same line drawn twice
+
+The four thresholds now live in `dbt_project.yml` under `vars:`, one home, never inline in SQL —
+same principle as the size bands in a seed: *a constant in two files will eventually disagree with
+itself.* But **they are not a seed, deliberately**, and the distinction is worth stating:
+
+- The size bands are **data** — a fact about dogs (a 45 kg dog is giant). They're joined to
+  `dim_breeds`, and they're **tested** (`assert_size_class_bands_cover`).
+- The thresholds are **config** — an expectation about a *run*. Nothing joins them; they're only
+  compared against. A seed for them would be a one-row, four-column table no model reads.
+
+`vars` also makes them overridable per invocation (`--vars '{expected_breed_count: 700}'`), which is
+right for a threshold and wrong for a fact about dogs. The test: **would a reviewer argue with it?**
+About 45 kg, yes — that's a claim about the world, so it's data and it gets tested. About "warn if
+the count moves 5%", no — that's an operational preference, so it's config.
+
+**Tolerance is not the observed value.** `max_lifespan_null_pct: 10` against an observed 6.38% is
+headroom on purpose. The guard's job is to catch the rate *moving*, not to assert today's number —
+set it to 6.4 and it fires on the first legitimate breed the API can't date, and a guard that cries
+wolf gets muted, which is the same as deleting it.
+
+### Auditing the tests *because* CI was next — 68 → 35
+
+I stopped before M5 and read all 68 tests. The trigger was specific: **CI is about to turn "68 tests
+passing" into a green badge on a PR, and a badge is a claim.** I didn't want to publish a number I
+hadn't checked. So one question per test, and deliberately not "is this likely to fail?" but **"can
+this fail, at all?"**
+
+**33 could not.** Not weak tests — *incapable* ones. Four were `not_null` on source columns DuckDB's
+own DDL already rejects nulls for (verified: the INSERT fails before dbt runs). ~27 were `not_null`
+on things that cannot be null by construction: `count(*)`, `lower(tag)` behind a `where tag <> ''`,
+a sum of CASEs. One was `unique` on a column the model produces with `group by`. One was
+`relationships` from the silver bridge to `stg_breeds` — the bridge *selects from* `stg_breeds`, so
+a child cannot carry a key its parent lacks.
+
+**The subtlety I nearly got wrong:** the *gold* bridge has the same `relationships` test, and it
+**stays**. There the two sides reach `stg_breeds` by different paths, so a filter on `dim_breeds`
+genuinely would orphan rows. Same test, same name, opposite verdict — because "can it fire?" is a
+question about the **DAG**, not about the test. I'd assumed the answer was a property of the test
+and would have cut both.
+
+**Why it's a decision, not a tidy-up.** A test that cannot fail is not weak coverage — it's **zero
+coverage that reports as coverage**. It's `warn_error_options` from the far side: there a test
+silently *stopped existing* while CI stayed green; here 33 tests *ran*, always passed, and CI stayed
+green. Both give you a build that reports success while proving nothing — one by absence, one by
+padding. And it rescues the one cheap signal I actually rely on: SPEC says *watch `Found N data
+tests`*, which is only meaningful if every N could go red.
+
+**What it cost, and I'd rather write it down than discover it later:** every cut is justified *by
+construction* — "`count(*)` is never null", "the bridge selects from its parent". That reasoning is
+true today and **is not itself tested**. Rewrite the bridge to select from `raw` instead of
+`ref('stg_breeds')` and the cut `relationships` test is precisely the one that would have caught it;
+its absence is silent. So each cut carries its reasoning **at the column in the YAML**, not in a
+commit message — the next person to touch that model reads why the test isn't there before removing
+the premise it rested on.
+
+**The honest framing:** "68 tests" reads as rigour until someone notices a third can't fail, and in
+a case graded on craft, padding reads worse than a lean suite. **35 that can each be made to fail
+beats 68 that can't.**
+
+### The check I automated instead of doing
+
+*"Verify the M2/M3 invariants are complete against SPEC's list (nothing silently skipped)"* was a
+box asking me to eyeball two lists and tick. That's exactly the check that already failed once —
+`assert_lifespan_plausible` sat promised-in-DECISIONS and unlisted-in-SPEC for two milestones
+because a human compared the lists and saw what they expected.
+
+It's now `audit.py`'s **PROMISES** section: every test named in any doc, reconciled against what's
+on disk. **18 ok, one tombstone, zero todo.** A box that says "verify X" is a box that will be
+ticked from memory eventually; a script that prints X is one that can't be.
+
+### Smaller things
+
+- **`dbt docs generate` ran green** — `catalog.json` + a 1.8 MB `index.html`, all 9 models and 68
+  tests, verified by reading the catalog rather than trusting the timestamp. But **`target/` is
+  gitignored**, so the lineage graph is regenerable-on-demand (`dbt docs generate && dbt docs
+  serve`), *not* committed. That's consistent with §5 — the laptop serves the demo — but it means
+  "capture the lineage graph for the debrief" is satisfied by a live demo, not an artifact in the
+  repo. If the debrief needs a static image, that's M8 polish. Flagged rather than silently ticked.
+- **The audit was green while the plan said 628**, again. It watches `dim_breeds rows = 627` and
+  found "627" cited in ARCHITECTURE_PLAN — in a *different sentence*. Third milestone, third time
+  BLIND SPOTS' *"whether a number is quoted in the RIGHT PLACE"* had teeth. The tool is honest about
+  this; I just have to keep reading the docs it can't.
+- **Ticking M2's boxes late found a comment arguing against its own file.** Going back to tick M2 —
+  shipped two commits ago — `stg_breed_temperaments.sql` still ended with *"NO `distinct` —
+  deliberate… a future 'Loyal, loyal' must reach the test"*, **thirty lines below the `select
+  distinct` it forbids**, and directly contradicting the header block that explains why DISTINCT is
+  there. The reversal ("absorb the problem, keep the signal") updated the code, the tests, SPEC,
+  DECISIONS and this file — and left its own trailer standing. The plan's M2 checklist still
+  specified "No `DISTINCT`" too, so the box was **unticked because it was untickable**: the item as
+  written described a model we deliberately don't have. Both corrected; the box now records the
+  reversal instead of the abandoned design.
+  This is the **second** comment found asserting something untrue (after M3's *"SPEC's stg column
+  list corrected"*, which hadn't been). Same shape both times: the reasoning gets written, the
+  decision gets reversed, and the *prose* is the last thing anyone updates — because no test reads
+  it. A stale comment is worse than no comment: it's a confident argument for the wrong design,
+  sitting inside the right one, and the next reader can't tell which is current.
+- **Two more numbers, same dedupe:** the bridge model's header said **~3,539 rows** (live **3,538**
+  — the sentinel exclusion) and DECISIONS §3 said `intelligent` **535** (live **536**; SPEC and
+  DECISIONS §4 both already said 536). Fixed. `dbt build` re-run after the comment edits:
+  **PASS=78**, bridge still 3,538 — confirming comment-only, as claimed.
+
+### Still open
+
+- **The warns are still inert.** Both surviving guards are `severity: warn`, so dbt prints them and
+  exits 0 — CI goes green and they die in a collapsed log. Every design choice above ("invariants
+  error, anomalies warn") is a bet on **M5** parsing `run_results.json` into `::warning::`
+  annotations. Until then this milestone's output is decoration, and
+  `assert_unknown_bucket_small`'s own header says so. Highest-value item in M5, unchanged.
+- **The two surviving guards have never fired.** `assert_no_breed_lost` earned its place by mutation
+  (dedupe by `breed_group` → `expected 627, actual 26, lost -601`, build stops) — that one is proven
+  *behaviour*. The other two are not: I haven't forced a run where `unknown` balloons or the null
+  rate spikes. Their thresholds are verified as *arithmetic*, not as behaviour, and the audit that
+  cut 33 tests for being unfireable pointedly did **not** prove these two can fire. They can — the
+  predicate is a live comparison against a real column — but "can in principle" is exactly the
+  standard I just rejected for everything else. Worth doing to my own two.
+- **The 33 cuts rest on untested reasoning.** Each is sound *by construction* and annotated at the
+  column, but nothing enforces the premise. Change the bridge to select from `raw` and the cut
+  `relationships` test is the one you'd want back — silently.
+- Both M2 items stand: nothing tests the latest-`run_date` filter, and the audit still can't see
+  rounded citations (`13.34` vs the docs' `13.3`).
+
+**Next:** M5 — CI on PR + the 02:00 UTC cron, `DOG_API_KEY` as an Actions secret, `working-directory:
+dbt` on every dbt step, and the one that makes M4 mean anything: **parse `run_results.json` into
+GitHub annotations so a warn is visible without failing the build.**

@@ -82,9 +82,17 @@ The line it draws, worth stating plainly: **a broken wire is an error; unexpecte
 One means the pipeline is lying about its coverage; the other means the world changed.
 
 **Corollary — watch `Found N data tests`.** It is the only cheap check that nothing silently
-vanished. Post-M2 it read **26**; post-M3 (marts + the bridge + their tests) it must read
-**9 models, 65 data tests**. `scripts/audit.py` prints this first, before the build result,
-for exactly this reason: a number that only ever goes up is easy to stop reading.
+vanished. Post-M2 it read **26**; post-M3 (marts + the bridge + their tests) **9 models, 65 data
+tests**; M4's guards took it to 68, and **M4's test audit then cut 33 unfireable tests** — so
+post-M4 it must read **9 models, 35 data tests** (`PASS=45`). See "CUT at M4 (33)" below.
+`scripts/audit.py` prints this first, before the build result, for exactly this reason: a number
+that only ever goes up is easy to stop reading.
+
+**And the count went *down*, which is the whole point of watching it.** Every prior milestone moved
+it up, so "did it grow?" was never a real check — the first number that ever fell is the one that
+proves someone is reading. A drop is either a deliberate cut (this one, 33 justified in writing) or
+a `ref()` that silently stopped resolving. **Those look identical from the count alone**, which is
+why the number is a prompt to go look, never an answer on its own.
 
 ### Source freshness (built in M2)
 
@@ -381,6 +389,66 @@ artifact, not two breeds.
    the load-bearing one: it's what fails if the join fans out, which is the realistic bug in a mart
    built from a bridge.
 
+### The suite is classified — 35 tests, and every one can fail
+
+**Audited at M4's close and cut from 68 to 35.** The question asked of each test was not "is it
+nice to have?" but **"what mutation makes it fail, and would something else catch that first?"**
+A test that cannot fail is not coverage — it is a claim of coverage, which is worse, because it is
+the one you trust when it matters. The same argument as a dropped test, a permanent warn, and a
+guard reporting green about the nine numbers it watches. Three categories, and every test is in one:
+
+#### 1. LOAD-BEARING (18) — the spine. Each catches something nothing else does.
+
+| test | catches | proven by |
+|---|---|---|
+| `assert_metric_parsed` | a string we didn't understand (any sentinel, not just `'unknown'`) | **RED on 4 rows** |
+| `assert_metric_shape_known` (warn) | the source changing NOTATION — the only thing that sees `"3.5 kg (7.7 lb)"` → 3.5/7.7 | verified on 7 shapes |
+| `assert_unit_ratio_plausible` | a silent unit switch. **Parses the source independently** — a test sharing the model's parser agrees with it by construction | **caught SPEC's own error** |
+| `assert_weight_min_le_max` · `assert_height_min_le_max` · `assert_lifespan_min_le_max` | a crossed envelope | mutation → FAIL 625/625/587 |
+| `assert_weight_mid_plausible` · `assert_lifespan_plausible` | MAGNITUDE: kg→lb, years→months | mutation → FAIL 504/587 |
+| `unique(stg_breeds.breed_name)` | **the duplicate breed.** `unique(breed_id)` is blind — 70 and 269 are distinct ids | **RED on 1 row** |
+| `assert_no_breed_lost` | a breed lost between raw and gold. The ONLY test spanning the source boundary | mutation → `627 vs 26, lost -601` |
+| `assert_size_class_bands_cover` | a gap or overlap in the seed — silently mis-buckets or double-counts | mutation → FAIL on both |
+| `assert_no_breed_unbanded` | a real weight that finds no band | — |
+| `assert_tag_lowercased` | the casing split that would fragment `intelligent` (536 breeds) into two wrong bars | **RED on 627 rows** |
+| `assert_tag_unique_per_breed` | the (breed, tag) grain — guards the `DISTINCT` | mutation → FAIL 3538 |
+| `assert_source_tag_not_duplicated` (warn) | a source dup the `DISTINCT` absorbed. **Re-derives the split** — a test downstream of the fix cannot see what the fix hid | simulated → WARN 1 |
+| `assert_tag_not_freetext` (warn) | a sentence in a controlled vocabulary | mutation → WARN |
+| `assert_pct_of_class_sane` | a bridge-join fan-out. `breed_count <= breeds_in_class` is arithmetically impossible otherwise | — |
+| `assert_unknown_bucket_small` (warn) | the weight parse degrading — **defends a chosen deliverable** while every hard test passes | mutation → WARN 1 |
+| `assert_lifespan_null_rate_stable` (warn) | life_span degrading under the mean-life-span line | mutation → WARN 1 |
+| `not_null(mart_metric_correlation.correlation)` | **`corr()` returns NULL when n < 2** — the one generic test here that can genuinely fire | — |
+
+#### 2. REGRESSION GUARDS (kept) — cannot fail on today's code; each names a PLAUSIBLE refactor.
+
+| test | guards against |
+|---|---|
+| `unique(dim_breeds.breed_id)` | swapping the band **scalar subquery for a LEFT JOIN** — 31 breeds sit on a boundary, so an overlap would fan out. Plausible: it's the obvious "tidy-up" |
+| `unique(mart_size_vs_lifespan.breed_id)` | this mart gaining a JOIN (to pull a column from the bridge) and plotting a breed twice |
+| `relationships(breed_temperaments → dim_breeds)` | `dim_breeds` gaining a `WHERE` (e.g. "exclude breeds with no weight"), orphaning bridge rows. The bridge and dim reach `stg_breeds` by DIFFERENT paths — which is why the *silver* equivalent was cut and this one kept |
+| `unique`/`not_null` on `size_class_bands` | the seed is a **CSV** — a blank cell IS a null, a copy-paste IS a dup |
+| PK tests on `stg_breeds` / `dim_breeds` (`breed_id`, `breed_name`) | the grain itself. `stg_breeds.breed_id` is `cast(payload->>'id')` — a payload without an id yields NULL |
+| `accepted_values(dim_breeds.size_class)` | a 6th label appearing — from a seed edit or a CASE branch. Guarded **once**, where the value is derived; the marts copy it, so their duplicates were cut |
+
+#### 3. CUT at M4 (33) — structurally unfireable. Not "unlikely to fail" — **incapable**.
+
+- **4 × source `not_null`** — `raw.breeds` is DDL `NOT NULL`; a null INSERT is rejected by DuckDB
+  before dbt runs (verified). Testing a database constraint with dbt is decoration.
+  **The source boundary keeps three real guards instead** — freshness (warn @36h),
+  `assert_unit_ratio_plausible`, `assert_no_breed_lost` — plus `ingest.py`'s `validate()`. It is the
+  riskiest edge in the project (the only thing outside my control), so it stays guarded; just not
+  by tests that can't fire.
+- **`unique(mart_size_class_summary.size_class)`** — the model *is* `group by size_class`.
+- **7 × `not_null` on `count(*)` columns** — `count()` never returns NULL.
+- **`relationships(stg_breed_temperaments → stg_breeds)`** — the bridge selects FROM stg_breeds; a
+  child cannot carry a key its parent lacks. Verified: 0 orphans possible.
+- **~20 × `not_null` inherited from a tested parent or a non-nullable expression** (`lower(tag)`,
+  `loaded_at` from a NOT NULL source column, a sum of CASEs).
+
+**The number was the point.** "68 tests" reads as rigour until someone notices a third of them
+cannot fail — and in a case graded on craft, padding reads worse than a lean suite. 35 that can each
+be made to fail is a stronger claim than 68 that can't.
+
 ### Severity: invariants ERROR, distributional guards WARN
 
 Tests 1–9 above are **hard invariants** — logically broken data (min > max, duplicate PK, a
@@ -393,13 +461,77 @@ legitimate growth is worse than surfacing it loudly for a human to judge. Use db
 `error_if` if a catastrophic band is wanted (e.g. warn at 5% deviation, error at 25%).
 
 10. custom `assert_unknown_bucket_small` (**warn**): `size_class = 'unknown'` must be **≤ 1%** of
-    `dim_breeds` (expected: 2 of 627 = 0.3%). **The highest-value guard of the three** — it directly
+    `dim_breeds` (expected: 2 of 627 = 0.3%). **The higher-value of the two guards** — it directly
     defends a chosen deliverable: if `unknown` balloons, the weight-distribution chart is visibly
     wrong while every hard test still passes.
-11. custom `assert_row_count_stable` (**warn**): `dim_breeds` row count within **±5%** of the
-    expected **~627** (dim_breeds, post-dedupe — NOT raw's 628).
+11. custom **`assert_no_breed_lost`** (**error**) — **replaces `assert_row_count_stable`, which was
+    cut in M4.** `dim_breeds` rows must EXACTLY equal the distinct breed **names** in raw's latest
+    partition (the dedupe is by name, so 628 raw rows → 627 names → 627 in gold). No tolerance, no
+    constant. Any mismatch means the pipeline lost a breed between raw and gold — and nothing else
+    would see it: `unique`/`not_null` pass happily on fewer rows and every downstream count stays
+    self-consistent.
+    **Why the ±5% band was cut** (all three reasons matter, and the first two are fatal):
+    - **it was blind to the thing it existed for** — measured: silent at losing 1, 5, or 31 breeds;
+      it only woke at 32. The exact reconciliation fires on one.
+    - **it rotted by design** — `expected_breed_count` is hand-maintained, so an API growing to 667
+      would WARN *every run* until someone edited it. A permanent warning is wallpaper: the exact
+      failure removed from `assert_tag_not_freetext` three files earlier, reintroduced without
+      noticing.
+    - **wrong severity** — losing a breed is a bug in *our code*, not drift in the world. Drift
+      warns; bugs fail. Verified: dedupe by `breed_group` instead of `breed_name` →
+      `expected 627, actual 26, lost -601`, ERROR, build stops.
+    **What it deliberately does NOT do:** report that the *source* changed size (it confirms
+    667 == 667 silently). That needs state — "changed since yesterday?" — and the pipeline is
+    stateless by choice (DECISIONS.md §1). A constant is the only stateless substitute, and
+    constants rot. The signal survives maintenance-free elsewhere: `ingest.py` logs the fetched
+    count against its floor, and `mart_data_coverage.total_breeds` is printed beside every chart.
 12. custom `assert_lifespan_null_rate_stable` (**warn**): `life_span_mid_years` null rate **≤ ~10%**
-    (observed: 6.4%).
+    (observed: 6.4%). Measured on `dim_breeds`' **output**, not the raw field, so it fires whether
+    the cause is the API or our own parser.
+
+#### The thresholds are `vars`, and live in ONE place
+
+Both numbers these guards compare against live in `dbt_project.yml` under `vars:` — never inline in
+the SQL. Same principle as the size bands living in a seed: **a constant that appears in two files
+will eventually disagree with itself.**
+
+```yaml
+vars:
+  max_unknown_size_class_pct: 1    # observed 2/627 = 0.32%
+  max_lifespan_null_pct: 10        # observed 40/627 = 6.38%
+```
+
+**Two guards, and both are RATES — that is not a coincidence.** A rate is self-normalising: it
+stays meaningful when the source grows from 627 to 667 breeds, so it never needs bumping. The cut
+third guard was a **count**, which is exactly why it needed a constant and why the constant rotted.
+The surviving rule: *if a guard needs a number that a human must remember to update, prefer an
+exact reconciliation against something the pipeline already knows.*
+
+**Why `vars` and not a seed** — the distinction is the point, and it's the same line drawn twice:
+
+| | the size bands | these thresholds |
+|---|---|---|
+| what it is | **data** — a fact about dogs (a 45 kg dog is giant) | **config** — an expectation about a *run* |
+| lives in | `seeds/size_class_bands.csv` | `dbt_project.yml` `vars:` |
+| joined to? | yes — `dim_breeds` joins it | no — only read by tests |
+| tested? | yes, `assert_size_class_bands_cover` | no — a threshold isn't a claim about the world |
+
+A seed is a table you can join. These are never joined, only compared against — putting them in a
+seed would mean a table with one row and four columns that no model reads. `vars` also makes them
+**overridable per invocation** (`dbt build --vars '{max_lifespan_null_pct: 15}'`), which is what a
+threshold should be and a fact about dogs should not.
+
+**Tolerance is not the observed value.** `max_lifespan_null_pct: 10` against an observed **6.38%**
+is deliberate headroom, not a typo — the guard's job is to catch the rate *moving*, not to assert
+today's number. Setting it to 6.4 would fire on the first legitimate breed the API can't date.
+
+**A postscript on the cut guard, kept because it is the most instructive thing in this section.**
+SPEC carried "row count **628** ±5%" for two milestones — every figure was computed pre-dedupe, and
+`dim_breeds` actually yields **627**. That's ~1 breed inside a 628-based tolerance, so the test
+would have gone green forever while comparing against a number the pipeline never produces. **A
+guard that passes for the wrong reason is worse than no guard** — it is the one you trust when it
+finally matters. Fixing the constant to 627 made it *correct*; it took a second look to notice that
+a guard needing a correct constant was the wrong shape entirely.
 
 **Why these exist at all:** every test 1–9 is a hard invariant, so the data can *degrade without
 breaking any of them*. A run returning 300 nulls, or `""` in place of `"unknown"`, is perfectly

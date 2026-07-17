@@ -112,8 +112,12 @@ relationships + unique(breed_id, temperament). Iterate against `dbt build` / `db
 - **Every chart prints its population** from `mart_data_coverage`: **585 of 627 plotted, 42
   excluded**. Coverage is **uneven by class** — toy **29/40** with a life span vs giant **58/58** —
   so `breeds_with_life_span` sits beside the bars. Never print 627 next to a chart drawn from 585.
-- **628 is raw; `dim_breeds` is 627** (the Caucasian dupe). Never mix them: the row-count guard is
-  627 ±5% at gold, 628 at raw.
+- **628 is raw; `dim_breeds` is 627** (the Caucasian dupe). Never mix them — `ingest.py` validates
+  raw against 628; `assert_no_breed_lost` reconciles gold against the distinct *names* in raw
+  (627), exactly, with no constant. A ±5% row-count band was tried and **cut**: blind below 32 lost
+  breeds, and its hand-maintained constant would warn forever once the API grew = wallpaper.
+  **Two distributional guards, not three, and both are RATES** — a rate doesn't rot when the source
+  grows. DECISIONS.md §3.
 
 ## Dashboard questions — CONFIRMED in M0.5 (answering 3 of 4)
 (1) **breeds per weight class**, (2) **size vs life span**, (3) **characteristic temperaments per

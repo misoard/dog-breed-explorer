@@ -1,4 +1,4 @@
--- Silver bridge: one row per (breed, normalised tag). 627 breeds -> ~3,539 rows.
+-- Silver bridge: one row per (breed, normalised tag). 627 breeds -> 3,538 rows.
 --
 -- The comma-separated string turned into something queryable. "Confident, alert, playful"
 -- in a single cell cannot be grouped, counted or joined; `LIKE '%playful%'` is a full scan
@@ -70,8 +70,3 @@ where tag <> ''
   -- unfolded value against a lowercase literal is a silent no-op, which is exactly what this
   -- filter was on its first pass. assert_tag_not_freetext staying at WARN 1 is what caught it.
   and lower(tag) <> 'variable depending on ancestry and individual traits'
-
--- NO `distinct` — deliberate. Verified: no breed repeats a tag, so DISTINCT would be
--- vacuous today AND would make assert_tag_unique_per_breed unable to ever fail. A future
--- "Loyal, loyal" must reach the test so a human sees it. Same rule as nulling only the
--- KNOWN sentinel in stg_breeds: never paper over the class you claim to detect.

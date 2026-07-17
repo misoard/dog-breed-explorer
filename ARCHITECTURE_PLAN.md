@@ -102,7 +102,9 @@ dog-breed-explorer/
 │     ├─ assert_weight_mid_plausible.sql     # error — magnitude; SPEC test 6 [M3]
 │     ├─ assert_lifespan_plausible.sql       # error — magnitude; months-for-years [M3]
 │     ├─ assert_unknown_bucket_small.sql     # warn  — distributional guards [M4]
-│     ├─ assert_row_count_stable.sql         # warn — [M4]
+│     ├─ assert_no_breed_lost.sql            # error — raw→gold exact reconciliation [M4]
+│     │                                      #   (replaced assert_row_count_stable: a ±5% band
+│     │                                      #    blind below 32 breeds, needing a constant that rots)
 │     └─ assert_lifespan_null_rate_stable.sql # warn — [M4]
 │
 ├─ dashboard/
@@ -213,14 +215,27 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       only weight's 2.205 runs imperial/metric. Test now measures each in its own direction.
       **Mutation-checked** the vacuous greens (inverted predicate → FAIL 625/587/625), so no test
       is green-but-unproven.
-- [ ] `stg_breed_temperaments.sql`: split comma list, **lowercase+trim** each tag (casing fix).
-      Contract first: `unique(breed_id, temperament)` (custom — no dbt_utils), not_null both,
+- [x] **DONE — `stg_breed_temperaments.sql`**: split comma list, **lowercase+trim** each tag (casing
+      fix). Contract first: `unique(breed_id, temperament)` (custom — no dbt_utils), not_null both,
       `relationships` → stg_breeds, **`assert_tag_lowercased`** (error — the genuine red: **627 tag
       rows carry uppercase**, so a model without `lower()` fails loudly), `assert_tag_not_freetext`
-      (warn). **No `DISTINCT`** — verified NO breed repeats a tag, so it would make the unique test
-      vacuous; let the test catch a future dup instead (same rule as nulling only the *known*
-      sentinel).
-- [ ] Commit per meaningful step. This is the hardest piece — understand the parser line by line.
+      (warn).
+      **Verified:** **3,538 rows**, 627 breeds → **626 with a tag** (Mongrel's sentinel excluded),
+      66 raw tags → 46 folded → **45** after the sentinel. `intelligent` **536**, `loyal` **450**.
+      All five tests green in `PASS=45` (post-audit suite).
+      **REVERSED mid-milestone — this line said "No `DISTINCT`, let the test catch a future dup".**
+      It now ships **`select distinct` + `assert_source_tag_not_duplicated` (warn)** that re-derives
+      the split from `stg_breeds` independently. Reason: folding the casing can *create* a dup that
+      isn't in the source (`"Loyal, loyal"`), so no-DISTINCT+error would fail the unattended cron
+      over one breed, and the fix would *be* DISTINCT. Once DISTINCT guarantees the grain, a
+      repeated source tag is drift, not broken data → **warn**, per our own severity rule.
+      `assert_tag_unique_per_breed` stays **error** on the model's *output*, guarding the grain
+      against anyone deleting that line. Path + reasoning in DAY_REPORT ("Reversed mid-milestone");
+      landed position in DECISIONS §3.
+- [x] Commit per meaningful step. This is the hardest piece — understand the parser line by line.
+      → Two commits, each a working step: `80741db` (scaffold + dev/prod targets + `stg_breeds`
+      green against its contract) and `5e70c90` (the bridge). The tests-first loop ran *inside*
+      each, never as `wip:` commits — a model and its contract land together.
 
 > **The TDD loop runs INSIDE M2 and M3 — one model + its tests is one unit of work.** For each
 > model: declare its tests first → stub the model → watch real assertions fail → fix → `dbt build`
@@ -234,7 +249,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 > defensible; claiming a textbook red-green cycle for dbt is not.
 >
 > Per-model invariants interleave here. The three **distributional guards stay in M4** — they
-> describe the finished pipeline ("628 ±5%") and can't be asserted against a half-built DAG.
+> describe the finished pipeline (a null RATE across all breeds) and can't be asserted against a half-built DAG.
 
 **M3 — dbt marts/gold (Day 3 pm)** — build to SPEC.md · same interleaved test loop as M2
 - [x] The `size_class_bands` **seed first** — `dim_breeds` joins it, so it exists before the model
@@ -299,12 +314,34 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 > **The per-model TDD loop already ran in M2/M3** — the hard invariants were declared *with* their
 > models and are green before M4 starts. What's left here is only what could NOT interleave: guards
 > that describe the *finished* pipeline, and the docs that need the whole DAG to exist.
-- [ ] **Distributional guards (`severity: warn`)** — three, no more: `unknown` bucket ≤1% (now
-      0.3%); row count 628 ±5%; life-span null rate ≤10% (now 6.4%). Rationale in DECISIONS.md §3:
-      invariants error, anomalies warn — data can degrade without breaking any invariant, and
-      legitimate drift shouldn't auto-fail the build.
-- [ ] Verify the M2/M3 invariants are complete against SPEC's list (nothing silently skipped).
-- [ ] `dbt docs generate` → capture the lineage graph for the debrief.
+- [x] **Distributional guards (`severity: warn`) — TWO, not three.** `unknown` bucket ≤1% (live
+      **2/627 = 0.32%**) and life-span null rate ≤10% (live **40/627 = 6.38%**). Rationale in
+      DECISIONS.md §3: invariants error, anomalies warn — data can degrade without breaking any
+      invariant, and legitimate drift shouldn't auto-fail the build. **Both are RATES**, which is
+      why neither needs a constant: a rate stays meaningful when the source grows.
+      Thresholds are **two `vars` in `dbt_project.yml`**, one home, documented in SPEC.
+- [x] **`assert_no_breed_lost` (error) — replaces the third guard.** `dim_breeds` rows must EXACTLY
+      equal the distinct breed *names* in raw's latest partition (628 raw → 627 names → 627 gold).
+      **Why the ±5% row-count band was cut, after first "fixing" its constant from 628 → 627:**
+      measured blind at losing 1/5/31 breeds (woke only at 32); `expected_breed_count` was
+      hand-maintained, so an API growing to 667 would WARN *every run* forever = wallpaper, the
+      exact failure removed from `assert_tag_not_freetext`; and losing a breed is a **bug**, not
+      drift → error, not warn. Verified: dedupe by `breed_group` → `expected 627, actual 26,
+      lost -601`, build stops. Test count **65 → 68**, then the M4 test audit cut 33
+      unfireable tests → **35**. `PASS=45 WARN=0 ERROR=0`.
+- [x] Verify the M2/M3 invariants are complete against SPEC's list (nothing silently skipped).
+      → Automated instead of eyeballed: `audit.py`'s **PROMISES** section reconciles every test
+      *named in any doc* against what's *built on disk*. Reports **18 ok**, two tombstones
+      (`assert_no_unknown_sentinel` and `assert_row_count_stable`, both superseded), zero `todo`.
+      Went further than the box asked: every surviving test was also checked for whether it *can
+      fail* — 33 could not, and were cut (DECISIONS §3, "I audited the whole test suite").
+      This is the check that would have caught `assert_lifespan_plausible` (promised in DECISIONS §3,
+      unlisted in SPEC, unbuilt for two milestones).
+- [x] `dbt docs generate` → capture the lineage graph for the debrief.
+      → Ran green: `target/catalog.json` + `target/index.html` (1.8 MB, all 9 models + 35 tests).
+      **Caveat:** `target/` is gitignored, so the graph is *regenerable on demand*
+      (`dbt docs generate && dbt docs serve`), not committed. Consistent with DECISIONS §5 — the
+      laptop serves the demo. A static screenshot for the debrief is M8 polish, not M4.
 
 **M5 — CI/CD + schedule (Day 4 am)**
 - [ ] GitHub Actions: on PR → install + `dbt build` + tests (visible status/badge). Runs
@@ -320,8 +357,9 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       GitHub `::warning::` annotations + a `$GITHUB_STEP_SUMMARY` table, so warns show on the PR and
       the run page **without failing the build** (which would defeat the point of warn severity).
       Same principle as "a red cron nobody sees is a cron that isn't running" (DECISIONS.md §5).
-      Applies to all four warns: `assert_metric_shape_known`, `assert_unknown_bucket_small`,
-      `assert_row_count_stable`, `assert_lifespan_null_rate_stable`, `assert_tag_not_freetext`.
+      Applies to all four warns: `assert_metric_shape_known`, `assert_tag_not_freetext`,
+      `assert_source_tag_not_duplicated`, `assert_unknown_bucket_small`,
+      `assert_lifespan_null_rate_stable`.
 
 **M6 — Dashboard + narrative (Day 4 pm)**
 - [ ] Streamlit reads the gold marts from the **local `dogs.duckdb`** (the prod target build) and is

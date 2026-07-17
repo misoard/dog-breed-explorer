@@ -134,7 +134,7 @@ blurbs; nobody markets a dog as aggressive. Stated that way it's defensible; as 
 it isn't.
 
 - **Why lift on *pairs*, not tag frequency:** what distinguishes a band is the *combination*.
-  Single-tag counts are dominated by `intelligent` (535) and `loyal` (450) — applied to ~95% of
+  Single-tag counts are dominated by `intelligent` (536) and `loyal` (450) — applied to ~95% of
   breeds in **every** band, i.e. marketing vocabulary carrying zero discriminating information. Pair
   lift is association-rule counting: ~10 lines, no model, every number explainable. I tried a
   5-group trait mapping first and dropped it — bundling `protective` (0% toy → 86% giant) with the
@@ -457,7 +457,8 @@ importing the min/max logic.
 - **Two kinds of test, two severities (the deliberate call).** My tests split into **hard
   invariants** — things true by the logic of the data (min ≤ max, PK unique, no `'unknown'` sentinel
   surviving into a numeric) — and **distributional guards**, which encode "this run looks like a
-  normal run" (row count ~628, null rates, the size of the `unknown` bucket).
+  normal run" (row count **~627 at gold** — not raw's 628, see SPEC "The thresholds are `vars`" —
+  null rates, the size of the `unknown` bucket).
   - **Invariants are `error`.** Logically broken data must not ship.
   - **Distributional guards are `warn`.** A row-count jump or a null-rate spike might be a real
     regression *or* legitimate drift — if the API genuinely adds 40 breeds, auto-failing the build
@@ -479,11 +480,80 @@ importing the min/max logic.
     warn. Same principle as the red-cron-nobody-sees note in §5. Without this step the entire
     warn/error split is theatre: I'd have carefully classified tests into a bucket that no human
     ever reads.
-  - **Scoped to three, on purpose.** `unknown` bucket ≤ 1%, row count ±5%, life-span null rate
-    ≤ 10%. The `unknown` guard is the most valuable because it defends a *chosen deliverable* — the
-    weight-distribution chart is visibly wrong the moment that bucket grows. Three wired properly
-    beats ten half-wired; this is a bonus that sits on top of the fundamentals, not a substitute
-    for them.
+  - **Scoped to TWO, and the third was cut in M4 — the more useful story.** What survives:
+    `unknown` bucket ≤ 1% and life-span null rate ≤ 10%. The `unknown` guard is the most valuable
+    of anything here because it defends a *chosen deliverable* — the weight-distribution chart is
+    visibly wrong the moment that bucket grows, while every hard test still passes. Two wired
+    properly beats ten half-wired; this is a bonus on top of the fundamentals, not a substitute.
+
+    **What I cut, and why it's the most instructive decision in this section.** SPEC specified
+    "row count 628 ±5%" from M0. At M4 I found the constant was wrong (628 is *raw*; `dim_breeds`
+    is **627**) and fixed it to 627 — a guard that had been comparing against a number the pipeline
+    never produces, sitting ~1 breed inside its own tolerance, **green forever for the wrong
+    reason**. Then, challenged on why the guard existed at all, three things fell out:
+    - **It was blind to the failure I justified it with.** I claimed it caught a staging bug
+      silently dropping breeds. Measured: silent at losing 1, 5, or **31** breeds; it woke at 32.
+    - **It rotted by construction.** `expected_breed_count` is hand-maintained, so an API growing
+      to 667 warns on *every run* until someone edits it. **A permanent warning is wallpaper** —
+      the exact failure I'd removed from `assert_tag_not_freetext` three files earlier, and
+      reintroduced without noticing.
+    - **An exact reconciliation was available the whole time.** The dedupe is *by name*, so
+      `dim_breeds` must equal the distinct breed names in raw's latest partition — **exactly**,
+      no constant, self-updating, fires on **one** lost breed. That's `assert_no_breed_lost`, and
+      it's `error`, not `warn`: losing a breed between raw and gold is a **bug in my code**, not
+      drift in the world. Verified by mutation (dedupe by `breed_group`): `expected 627, actual
+      26, lost -601` — build stops.
+
+    **The rule this leaves, which generalises past this project:** *if a guard needs a number a
+    human must remember to update, look for an exact reconciliation against something the pipeline
+    already knows.* Both survivors are **rates**, and that's why they don't rot — a rate stays
+    meaningful when the source grows; a count does not.
+
+    **What we gave up, stated honestly:** nothing now reports that the *source changed size* —
+    `assert_no_breed_lost` confirms 667 == 667 and stays quiet. That is **out of scope by
+    construction**: "changed since yesterday?" requires state, and §1 chose statelessness
+    deliberately. A constant is the only stateless substitute and constants rot. The signal
+    survives maintenance-free in two places that already exist: `ingest.py` logs the fetched count
+    against its ≥90% floor, and `mart_data_coverage.total_breeds` is printed beside every chart.
+- **I audited the whole test suite before wiring CI — and cut it from 68 to 35.** This was a
+  deliberate stop, taken *because* M5 was next. CI is about to turn "68 tests passing" into a green
+  badge on a PR, and a badge is a **claim**. I didn't want to publish a number I hadn't checked, so
+  I read all 68 and asked one question of each: **can this test fail?** Not "is it likely to" —
+  *can it, at all.* **33 could not.** The full inventory, with the reason for each cut, is in SPEC
+  ("CUT at M4 (33) — structurally unfireable"). The shape of it:
+  - **4 source `not_null`** — DuckDB's DDL already rejects a null INSERT before dbt runs (verified).
+    Testing the database's own constraint with dbt is decoration.
+  - **~27 `not_null` on columns that cannot be null by construction** — `count(*)`, `lower(tag)`
+    behind a `where tag <> ''`, a sum of CASEs, a column inherited from an already-tested parent.
+  - **`unique(mart_size_class_summary.size_class)`** — the model *is* `group by size_class`.
+  - **`relationships(stg_breed_temperaments → stg_breeds)`** — the bridge selects **from**
+    `stg_breeds`; a child cannot carry a key its parent lacks. (The **gold** bridge keeps its
+    `relationships` test: there the two sides reach `stg_breeds` by different paths, so a filter on
+    `dim_breeds` genuinely *would* orphan rows. Same test name, opposite verdict — the DAG decides,
+    not the label.)
+
+  **Why this is a decision and not a cleanup.** A test that cannot fail is not weak coverage, it is
+  **zero coverage that reports as coverage** — it inflates the count, dilutes the suite, and makes
+  every green run slightly less informative. It's the same lesson as §3's `warn_error_options`
+  ("a dropped test is worse than no test") arriving from the far side: there, a test silently
+  *stopped existing* while CI stayed green; here, 33 tests *ran* and always passed while CI stayed
+  green. **Both produce a build that reports success while proving nothing** — one by absence, one
+  by padding. And it makes the one cheap signal I rely on honest again: SPEC says *watch
+  `Found N data tests`*, which only means something if every N is a test that could go red.
+
+  **The number was the point.** "68 tests" reads as rigour until a reviewer notices a third of them
+  are incapable of failing — and in a case graded on craft, padding reads worse than a lean suite.
+  **35 that can each be made to fail is a stronger claim than 68 that can't.** Every survivor is
+  listed in SPEC with the specific failure it catches; the ones I could, I proved by mutation
+  (invert the predicate, watch it go red) rather than by argument.
+
+  **What it cost, honestly:** the cuts are justified *by construction* — "`count(*)` is never null",
+  "the bridge selects from its parent". That reasoning is sound today and is **not itself tested**.
+  If someone later rewrites the bridge to select from `raw` instead of `ref('stg_breeds')`, the
+  cut `relationships` test is exactly the one that would have caught it, and its absence is silent.
+  Each cut therefore carries its reasoning *at the column* in the YAML, not in a commit message —
+  so the next person changing that model reads why the test isn't there before removing the premise
+  it rested on.
 - **Where computation lives:** business logic (parsing, derived attributes, key aggregations) is
   pushed **upstream into the gold layer**, so the dashboard stays thin and the logic is
   centralized, tested, and reusable. _[state this explicitly — it's a key design point]_
