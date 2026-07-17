@@ -1,0 +1,75 @@
+# Daily health check — "does the world still look like we think?"
+#
+# Same pipeline as ci.yml (scripts/run_pipeline.sh, one definition), different
+# question. ci.yml asks whether a CHANGE works; this asks whether the pipeline
+# still works when nothing changed — which is only interesting because it makes a
+# REAL API CALL. It is what catches the API changing shape, the key expiring, or a
+# distributional guard starting to fire, on a day when nobody is looking.
+#
+# It is a HEALTH CHECK, NOT A DEPLOYMENT, and that is a deliberate call, not an
+# oversight (DECISIONS.md §5): the run builds gold, tests it, goes green, and
+# throws its warehouse away. Serving was never its job — the laptop's prod build
+# is what the dashboard reads. Since every run rebuilds from the API anyway
+# (§1, stateless), a run's warehouse holds nothing worth persisting.
+#
+# Kept as its own workflow, not a second trigger on ci.yml, so this red is
+# distinguishable from a broken PR at a glance. They fail for different reasons
+# and want different reactions.
+
+name: Scheduled pipeline
+
+on:
+  schedule:
+    # 02:00 UTC daily. Actions cron is best-effort and can lag under load — fine
+    # for a health check on a source that changes ~never. One daily job is also
+    # the entire reason there's no Airflow here (DECISIONS.md §6).
+    - cron: '0 2 * * *'
+  # So the cron can be exercised on demand instead of waiting until 02:00 —
+  # otherwise the only way to test a change to it is to wait a day.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    name: ingest + dbt build + test (live API)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # One env var, two programs. See ci.yml / SPEC.md "dbt targets".
+      DBT_DUCKDB_PATH: ${{ github.workspace }}/dogs.duckdb
+      DBT_TARGET: prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Run the pipeline
+        env:
+          # Without this the cron 403s every night. Repo Settings > Secrets and
+          # variables > Actions > New repository secret.
+          DOG_API_KEY: ${{ secrets.DOG_API_KEY }}
+        run: ./scripts/run_pipeline.sh
+
+      # The distributional guards (warn) are the reason this cron is worth having:
+      # they are how "the data quietly degraded" becomes visible without failing a
+      # legitimate run. They only reach a human if this step runs. DECISIONS.md §3.
+      - name: Surface dbt warnings
+        if: always()
+        run: python scripts/annotate_warns.py
+
+      # No artifact upload, no persistence: the warehouse dies with the VM, on
+      # purpose. See the header, and DECISIONS.md §5.
+      #
+      # KNOWN GAP (stated, not hidden): a failed scheduled run is only visible on
+      # the Actions page — nothing pushes it to me. A red cron nobody sees is a
+      # cron that isn't running. Alerting is the "with more time" item in §5.

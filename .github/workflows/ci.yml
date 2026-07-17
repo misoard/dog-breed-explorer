@@ -1,0 +1,83 @@
+# CI — "does this change still work?"
+#
+# The question this answers is about the CODE. Its sibling, scheduled.yml, asks a
+# different question about the WORLD ("does the API still look like we think?"),
+# which is why they are two workflows and two status checks rather than one file
+# with two triggers: when the cron goes red at 02:00, it must be distinguishable
+# at a glance from a broken PR.
+#
+# The pipeline itself is NOT defined here — it's scripts/run_pipeline.sh, shared
+# verbatim with the cron and with a local run. Deduplicate in the script, not in
+# the CI system: this YAML is a trigger, and nothing here is locked to Actions.
+#
+# It ingests for real, against the live API, because there is no fixture and no
+# persisted warehouse to build on (DECISIONS.md §1 — stateless, the API is the
+# source of truth). raw.breeds does not exist until ingest.py creates it, so
+# "install + dbt build" alone would fail on a missing source. That makes every PR
+# check a genuine end-to-end run from an empty warehouse.
+
+name: CI
+
+on:
+  pull_request:
+  # Also on main so the README badge has something to report: a badge reads the
+  # latest run on the default branch, and a pull_request-only workflow leaves it
+  # permanently "no status".
+  push:
+    branches: [main]
+
+# A second push to a PR makes the first run's answer irrelevant — and each run
+# costs a real API call. Cancel the superseded one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    name: ingest + dbt build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # THE SEAM: ingest.py (--db) and dbt (profiles.yml) are two programs that
+      # must agree on one file path. Set it once, absolute, and hand it to both.
+      # SPEC.md "dbt targets".
+      DBT_DUCKDB_PATH: ${{ github.workspace }}/dogs.duckdb
+      DBT_TARGET: prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      # A clean env, exactly what the local .venv is. NOT conda base — dbt needs
+      # protobuf>=6 and the base TensorFlow stack pins <4; they cannot coexist.
+      # requirements.txt is pinned on minor so CI installs the dbt I developed on.
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Run the pipeline
+        env:
+          # /v1/breeds returns 403 without it. Set in repo Settings > Secrets.
+          DOG_API_KEY: ${{ secrets.DOG_API_KEY }}
+        run: ./scripts/run_pipeline.sh
+
+      # dbt prints WARN and exits 0, so a fired warn-severity test would leave CI
+      # green and the signal dead in a collapsed log. This turns run_results.json
+      # into PR annotations + a summary table WITHOUT failing the build — which is
+      # the whole point of warn severity. DECISIONS.md §3/§5.
+      #
+      # `always()`: a red build is exactly when you most want to see what else fired.
+      - name: Surface dbt warnings
+        if: always()
+        run: python scripts/annotate_warns.py
+
+      # CI proves the pipeline; it does not serve it (DECISIONS.md §5). The
+      # warehouse dies with the VM, deliberately — nothing is uploaded, nothing is
+      # persisted. This is not an oversight to be "fixed" with S3/MotherDuck.
