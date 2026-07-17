@@ -344,22 +344,69 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       laptop serves the demo. A static screenshot for the debrief is M8 polish, not M4.
 
 **M5 — CI/CD + schedule (Day 4 am)**
-- [ ] GitHub Actions: on PR → install + `dbt build` + tests (visible status/badge). Runs
+> **The bar for this milestone, set deliberately: a box ticks when a run has gone GREEN on GitHub,
+> not when the YAML is written.** A workflow file cannot be tested locally — the trigger, the
+> secret, and GitHub's rendering of `::warning::` are only exercised by a real run, and a real run
+> needs a **PR** (§4's ruleset: `main` takes no direct pushes). So M5's code ships with its boxes
+> **open**, and they close after the first Actions run. This is the chicken-and-egg the milestone
+> gate can't dissolve: verifying M5 requires the very ship the gate is meant to precede. Ticking on
+> "the file exists and parses" would be the same unproven green this project rejects everywhere
+> else — so it stays honest instead of tidy.
+- [ ] GitHub Actions: on PR → install + `dbt build` + tests (**visible PR status check**). Runs
       **`--target prod`**; `DBT_DUCKDB_PATH` sets ingest.py's `--db` and the dbt target from ONE
       env var (they must agree on a path — SPEC "dbt targets").
+      **The badge moves to the README milestone (M6/M8):** this box said "status/badge", but there
+      is no `README.md` yet, so the badge has nowhere to live — it's one line to add once the README
+      exists, and half a box that could never be met here. Caught at the M5 close-out.
+      → **BUILT, not verified:** `.github/workflows/ci.yml` (`pull_request` + `push: main` so the
+      future badge has a default-branch run to report; `concurrency` cancels superseded runs).
+      Parses with the right triggers/steps. The **pipeline** it runs is proven (below); the
+      **trigger** is not, until a PR runs it.
 - [ ] Cron @ 02:00 UTC: ingest → `dbt build --target prod` → tests → **discard the warehouse**.
       **CI proves the pipeline; it does not serve it** (DECISIONS.md §5) — the run is a health check
       with a real API call attached, which is what catches the API changing shape or the key
       expiring. Not a deployment; say so out loud rather than letting it look like an oversight.
-- [ ] **`DOG_API_KEY` as an Actions secret** — the cron 403s without it. Nothing else is secret.
+      → **BUILT, not verified:** `.github/workflows/scheduled.yml` (cron `0 2 * * *` +
+      `workflow_dispatch`, so the cron can be exercised on demand instead of waiting until 02:00).
+      No artifact upload — the warehouse dies with the VM, on purpose.
+- [x] **`DOG_API_KEY` as an Actions secret** — the cron 403s without it. Nothing else is secret.
+      → **Confirmed by me (Mathieu) — NOT machine-verifiable from the repo.** This tick rests on my
+      word, not on an artifact anything here can check; repo settings aren't visible to the audit or
+      the agent. If the first run 403s, this box is the first suspect.
 - [ ] **Make `warn` visible, or it isn't a signal.** dbt prints WARN to stdout and exits 0 — so CI
       goes green and the warning dies in a collapsed log. Parse `target/run_results.json` and emit
       GitHub `::warning::` annotations + a `$GITHUB_STEP_SUMMARY` table, so warns show on the PR and
       the run page **without failing the build** (which would defeat the point of warn severity).
       Same principle as "a red cron nobody sees is a cron that isn't running" (DECISIONS.md §5).
-      Applies to all four warns: `assert_metric_shape_known`, `assert_tag_not_freetext`,
+      Applies to all **five** warns: `assert_metric_shape_known`, `assert_tag_not_freetext`,
       `assert_source_tag_not_duplicated`, `assert_unknown_bucket_small`,
-      `assert_lifespan_null_rate_stable`.
+      `assert_lifespan_null_rate_stable`. *(The line said "four" and then listed five — a
+      miscount, not a design change. The five are correct.)*
+      → **BUILT and proven locally; the GitHub half is not.** `scripts/annotate_warns.py`. The
+      failure mode was **reproduced, not argued**: forcing two guards with
+      `dbt test --vars '{max_unknown_size_class_pct: 0, max_lifespan_null_pct: 1}'` gives
+      **`WARN=2` and exit 0** — green build, signal dead in the log. The same run through the
+      annotator emits two `::warning::` lines + the summary table and still exits 0. Also proven:
+      hash-suffixed generic-test ids render readably, warns still surface when the build is red
+      (`if: always()`), and a missing/corrupt `run_results.json` emits `::error::` and **exits 1**
+      (— "I found no warnings" must never look like "I could not look").
+      **Unticked because the last mile is GitHub's:** that these strings become annotations on a PR
+      is a contract only a real run can prove.
+- [x] **Acceptance check from Day 1 — CLOSED.** Run the whole pipeline against an *empty* warehouse
+      and prove no persistence is needed. Only the ingestion half was ever verified.
+      → **DONE.** `DBT_DUCKDB_PATH=/tmp/fresh.duckdb ./scripts/run_pipeline.sh` against a file that
+      did not exist reproduced every published number from nothing: **628** raw / **1** partition →
+      **627** `dim_breeds` → **3,538** bridge → coverage **627/585/42**, toy **29/40** vs giant
+      **58/58**, `Found 9 models, 35 data tests`, **`PASS=45 WARN=0 ERROR=0`**. That is the CI VM's
+      exact starting condition, so CI is not a special case — it's the same run. This is why the
+      *pipeline* half of M5 counts as proven even though the *triggers* don't.
+- [x] **The pipeline lives in `scripts/run_pipeline.sh`, not in YAML** — one definition, shared by
+      both workflows and a local run; the YAML is a thin trigger. Deduplicate in the script, not in
+      the CI system (DECISIONS.md §5). It also owns the `DBT_DUCKDB_PATH` seam, resolving it to an
+      **absolute** path so `ingest.py` (runs from the repo root) and dbt (must run from `dbt/`)
+      cannot disagree about what `../dogs.duckdb` means.
+      → Verified by the empty-warehouse run above — that went through this script, not through dbt
+      directly.
 
 **M6 — Dashboard + narrative (Day 4 pm)**
 - [ ] Streamlit reads the gold marts from the **local `dogs.duckdb`** (the prod target build) and is

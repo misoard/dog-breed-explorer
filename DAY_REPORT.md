@@ -173,7 +173,7 @@ latest `run_date`, then the parser, tests-first, one model at a time.
 
 ---
 
-## Day 2 — 2026-07-17 · M2 (dbt staging/silver) + M3 (marts/gold) + M4 (guards + docs) shipped
+## Day 2 — 2026-07-17 · M2 (staging) + M3 (marts) + M4 (guards + docs) shipped · M5 (CI/CD) built, deliberately NOT closed
 
 **Shipped:** the dbt scaffold with dev/prod targets, `stg_breeds` and `stg_breed_temperaments`, each
 built test-first. **26 tests, all green**, every one of them either failed on real data or was
@@ -642,3 +642,136 @@ ticked from memory eventually; a script that prints X is one that can't be.
 **Next:** M5 — CI on PR + the 02:00 UTC cron, `DOG_API_KEY` as an Actions secret, `working-directory:
 dbt` on every dbt step, and the one that makes M4 mean anything: **parse `run_results.json` into
 GitHub annotations so a warn is visible without failing the build.**
+
+---
+
+## M5 — the milestone that cannot be verified before it ships
+
+### Claude proposed the DRY answer; the better one was to move the duplication
+
+I asked how to express CI-on-PR and the 02:00 cron, since they run the same four steps. Claude
+recommended a reusable `workflow_call` workflow called by both — the textbook don't-repeat-yourself
+answer, and it framed the alternative as costing "~35 duplicated lines".
+
+That framing was the bug. **The 35 lines only exist if the pipeline lives in YAML.** Put it in
+`scripts/run_pipeline.sh` and each workflow collapses to checkout + setup-python + pip install +
+one line, and what's "duplicated" is eight lines of boilerplate. `workflow_call` would then be
+adding a concept a reviewer must learn — and breaking the badge, since each badge points at a
+*caller* rather than the job — in order to deduplicate `actions/checkout`. Tail, dog.
+
+**The rule I'd state in the debrief: deduplicate in the script, not in the CI system.** The payoff
+isn't tidiness — it's that the pipeline is now runnable *identically* on my laptop and in Actions
+(same script, same seam, same path resolution), and none of it is locked to GitHub. If this moved to
+GitLab or Dagster tomorrow, the pipeline definition moves unchanged and only the trigger is
+rewritten. Two workflows also stay two *status checks*, which matters at 02:00: a red cron and a
+broken PR fail for different reasons and want different reactions, and merging them into one file
+with two triggers would make me open the log to find out which I'm looking at.
+
+### The warn design was theatre for four days. I made it fire.
+
+M4 shipped five `severity: warn` tests and DAY_REPORT's own "Still open" said the warns were
+**inert**: dbt prints WARN and exits **0**, so CI goes green and the signal dies in a collapsed log.
+
+Rather than assert the fix, I reproduced the failure. Forcing two guards —
+`dbt test --vars '{max_unknown_size_class_pct: 0, max_lifespan_null_pct: 1}'` — gives **`WARN=2` and
+exit code 0**. Green build, two fired guards, nothing to see. That is the whole problem, on demand,
+in one command.
+
+Then the same `run_results.json` through `scripts/annotate_warns.py`: two `::warning::` annotations,
+a summary table, **exit 0**. Exit 0 is the design, not an oversight — failing there would
+re-implement `--warn-error` and destroy the split M4 spent a milestone building. A warn is for a
+human to judge; a robot blocking on it is the thing I explicitly refused.
+
+**This also closed an M4 open item I'd written down and would otherwise have carried to submission.**
+M4's "Still open" admitted the two surviving guards had **never fired** — their thresholds were
+verified as arithmetic, not as behaviour, and I noted that the same audit which cut 33 tests for
+being unfireable had pointedly not proven these two *could* fire. They both fired today. The bar I
+set for other people's tests now applies to my own.
+
+### Why the annotator is a script and not four lines of `jq`
+
+The tempting version is inline `jq` in the YAML: no new file, no Python. It's disqualified by its
+failure mode. **A bug in inline jq produces no annotation — which is indistinguishable from no
+warnings.** The mechanism whose entire job is making problems visible would fail *invisibly*, and
+only inside Actions, where I can't run it. That is the same shape as a vacuous green and an
+unfireable test, arriving one level up: a guard that can silently stop guarding.
+
+So it's a script I can run against a real or synthetic `run_results.json` — and I did, including the
+cases the live suite can't produce on demand: a hash-suffixed generic-test id (renders readably), a
+warn alongside an outright failure (still surfaces — the step is `if: always()`, because a red build
+is exactly when you want to know what *else* fired), and an embedded newline in dbt's message.
+
+Its own failure is loud by construction: a missing or corrupt `run_results.json` emits `::error::`
+and **exits 1**. "I found no warnings" and "I could not look" must never render identically —
+that would rebuild the exact silence the script exists to break.
+
+### The Day 1 acceptance check, finally closed — and it had been an argument, not a result
+
+§1 has claimed since Day 1 that "a fresh, empty warehouse is a supported starting point". M1 only
+ever tested the **ingestion** half against an empty file; "the rest rebuilds fine" was reasoning.
+Against a warehouse that did not exist, `DBT_DUCKDB_PATH=/tmp/fresh.duckdb ./scripts/run_pipeline.sh`
+reproduced **every** published number from nothing: 628 raw in 1 partition → 627 `dim_breeds` →
+3,538 bridge rows → coverage 627/585/42, toy 29/40 vs giant 58/58, `PASS=45 WARN=0 ERROR=0`.
+
+Ten minutes, and it retires the load-bearing assumption under both §1 (statelessness) and §5 (CI
+proves the pipeline). The alternative was finding out at 02:00 on the first cron.
+
+### The close-out caught a box that could never be met
+
+M5's first item said "visible status/**badge**". There is no `README.md` in this repo — the badge had
+nowhere to live. It's an M6/M8 deliverable that the M5 checklist had quietly annexed on Day 1, and
+nobody notices a half-true box until something forces a line-by-line read. Amended: status check
+here, badge with the README. (Same close-out also found the plan promising "all four warns" above a
+list of five. A miscount, not a design change.)
+
+### What I got wrong
+
+- **I let Claude frame the CI question as a DRY problem and nearly took the DRY answer.** The right
+  move wasn't picking between the options offered — it was rejecting the premise that the pipeline
+  belongs in YAML at all. Worth remembering that a well-argued recommendation can still be answering
+  the wrong question.
+- **I'd have ticked M5 on "the files exist".** Every instinct at close-out was to call written YAML
+  a finished milestone. It's the same unproven green I've spent two days eliminating — just wearing
+  a different hat, because YAML *feels* like configuration rather than code.
+
+### The chicken-and-egg, stated rather than dissolved
+
+**M5 cannot be verified before it ships.** A workflow file has no local test: the trigger, the
+secret, and GitHub's rendering of `::warning::` are only exercised by a real run, and a real run
+needs a PR — the very ship the milestone gate is supposed to precede. So the code ships with three
+of four boxes **open**, and they close after the first Actions run.
+
+*(Sharpened at ship time: I'd written "needs a push", and then protected `main` — so `main` now takes
+no pushes at all and the only route to a run is branch → PR → CI → merge. The ceremony makes the
+chicken-and-egg **worse**, and better: worse because M5 now can't close without a merged PR; better
+because `ci.yml`'s `on: pull_request` half finally has a PR to fire against. Before the ruleset I'd
+have been committing to `main` and shipping a trigger that had literally never run.)*
+
+I chose that over the tidy alternative (tick on "the file parses, and the pipeline it calls is
+proven"). Both readings are defensible; one of them is the unproven green again. The gate correctly
+reports **NOT ready**, I'm overriding it knowingly, and the override is written down here rather
+than hidden by a box I talked myself into ticking.
+
+### Still open
+
+- **The workflows have never run.** `run_pipeline.sh` is proven (empty warehouse, green,
+  every number) and `annotate_warns.py` is proven (two real warns through it). The **triggers** are
+  not: `pull_request`/`schedule` firing, the secret resolving, `${{ github.workspace }}` landing
+  where I think, and `::warning::` actually rendering on a PR. **The first PR is the real test.**
+- **`DOG_API_KEY` as a secret is ticked on my word alone** — nothing in the repo can check it, and
+  neither the audit nor the agent can see repo settings. If the first run 403s, that box is the
+  first suspect.
+- **A fork PR will 403.** No fixture, no persisted warehouse (§1), so `raw.breeds` doesn't exist
+  until `ingest.py` creates it — which means every PR spends a real API call and CI can go red
+  because *the API* is down rather than because the code is wrong. Right trade at one contributor;
+  with outside contributors I'd record a fixture for the PR path and keep the live call on the cron.
+- **Nothing alerts on a red cron.** It's visible only on the Actions page — a red cron nobody sees
+  is a cron that isn't running (§5). Alerting stays a "with more time" item, now with a workflow
+  that can actually go red to justify it.
+- **CI installs streamlit + pandas it never uses** (~30s a run). Splitting requirements is real
+  scope for a small win; noted, not done.
+- Carried from M4: the 33 cuts still rest on untested reasoning; nothing tests the
+  latest-`run_date` filter; the audit still can't see rounded citations (`13.34` vs `13.3`).
+
+**Next:** open the PR, watch the first CI run, close M5's three open boxes on the evidence — then M6
+(Streamlit reading the local prod build) + the README, where the badge lands.
