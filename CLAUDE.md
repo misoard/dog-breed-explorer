@@ -139,7 +139,7 @@ range".
 - **LLM bonus = Pattern A:** `enrich.py` reads `stg_breeds` → LLM → writes `raw.breed_enrichment`;
   `dim_breeds` **LEFT JOIN**s it via `source()`. Order: ingest → dbt staging → enrich → dbt marts.
   dbt never makes a network call.
-- **"Size" = weight, not height** — weight↔life −0.671 vs height↔life −0.503, and the two are
+- **"Size" = weight, not height** — weight↔life −0.670 vs height↔life −0.502, and the two are
   0.860-coupled, so height adds little. Evidence in `mart_metric_correlation`.
 - **Never a dual-axis chart.** Counts and life span render as two charts stacked on a shared
   x-axis. Two y-scales align arbitrarily and fabricate a relationship. See DECISIONS.md §0.

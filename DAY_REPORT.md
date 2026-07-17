@@ -173,12 +173,16 @@ latest `run_date`, then the parser, tests-first, one model at a time.
 
 ---
 
-## Day 2 — 2026-07-17 · M2 (dbt staging/silver) shipped
+## Day 2 — 2026-07-17 · M2 (dbt staging/silver) + M3 (marts/gold) shipped
 
 **Shipped:** the dbt scaffold with dev/prod targets, `stg_breeds` and `stg_breed_temperaments`, each
 built test-first. **26 tests, all green**, every one of them either failed on real data or was
 mutation-checked. Two of the day's findings were *my own documents being wrong* — caught by tests
 written before the models they guard.
+
+**Then M3 the same afternoon:** the seed, `dim_breeds`, the bridge, and the five marts — **9 models,
+65 data tests, PASS=75 WARN=0 ERROR=0**. M3's own section is below (*"M3 — the milestone where the
+docs drifted, not the code"*).
 
 ### The headline: a test found a spec error before the model existed
 
@@ -313,6 +317,175 @@ warns principle paid for itself within a minute of being adopted.
   quietly becomes "absorb the problem". This is the highest-value item in M5.
 - Nothing tests the **latest-`run_date` filter** — with one partition locally, no test can see it.
 
-**Next:** M3 — the `size_class_bands` seed first (it's the ONLY home of the boundaries, and
-`dim_breeds` joins it), then `dim_breeds`, the bridge, and the marts. Contracts on the five the
-dashboard reads.
+---
+
+## M3 — the milestone where the docs drifted, not the code
+
+**Shipped:** `size_class_bands` (seed) → `dim_breeds` (627) → `breed_temperaments` (3,538) → the
+five marts. **9 models, 65 data tests, PASS=75, zero warns, zero errors.** Six contracts enforced
+(the 5 marts + the bridge), `dim_breeds` deliberately uncontracted.
+
+The honest headline: **M3's code came out clean, and its *documentation* was the thing that was
+broken.** Every model matched its contract. The M3 close-out found four defects — all four in the
+docs, three of them in claims I'd written myself. The tests-first loop worked; the doc-keeping
+didn't. Worth stating plainly because it's the opposite of the failure I expected.
+
+### What I got wrong: I wrote down a fix I never made
+
+`dim_breeds.sql` carries a comment explaining that `life_span_mid_years` belongs in gold, not
+staging — a midpoint is a derived *opinion* (`(min+max)/2` is a RULE, not a fact the API stated), so
+all three midpoints belong on the same side of the silver/gold line. Good reasoning. It ends:
+*"SPEC's stg column list corrected."*
+
+**It wasn't.** SPEC still listed `life_span_mid_years` as a `stg_breeds` column, and omitted it from
+`dim_breeds` entirely. I had written the justification for a change and then narrated the follow-up
+as though I'd done it. The code was right; the comment was a small lie about the world outside it.
+
+Caught only by opening SPEC and looking — no test can see this, because **a comment claiming a doc
+was updated is unfalsifiable from inside the warehouse**. The live pipeline settled it: the column
+is in `dim_breeds`, absent from `stg_breeds`. SPEC now says so, with the reasoning moved into it.
+
+Lesson I'd rather not have learned this way: *"and I updated X"* in a comment is a claim, and claims
+in comments never get tested. Either make the edit in the same breath or don't write the sentence.
+
+### The number sweep that missed the prose
+
+Day 2's dedupe changed the gold-grain numbers, and commit `6c3c112` — *"recompute every gold-grain
+number post-dedupe"* — was supposed to chase them all down. It fixed **SPEC's correlation table**
+(−0.670 / −0.502 / 0.860, correct against the warehouse today). It missed **four citations in
+prose**: SPEC ×2, CLAUDE.md ×1, and the ones in this file.
+
+The pattern is worth naming: the sweep fixed the numbers where you *look them up* and missed the
+numbers where you *argue with them*. A correlation in a table looks like data and gets checked; the
+same correlation inside "weight↔life −0.671 vs height↔life −0.503, so size means weight" reads like
+a sentence, and sentences don't look like they need recomputing. They're the ones that end up in the
+debrief.
+
+Corrected to live values (−0.670 / −0.502) in SPEC and CLAUDE.md. **Left alone in this file's Day 1
+section on purpose** — −0.671 is what I believed pre-dedupe, and DECISIONS §1 already records the
+correction. Rewriting yesterday's narrative to match today's numbers would be falsifying the path
+this file exists to preserve.
+
+**Why nothing caught it:** `scripts/audit.py` cross-checks every figure in `LIVE_NUMBERS` against the
+docs that quote it — but `LIVE_NUMBERS` is **row counts only**. The correlations, the per-class
+coverage, and the σ values are cited across five docs and watched by nothing. The audit reported
+"ok" on all nine numbers while four wrong ones sat in the same files. A guard that watches nine
+numbers and reports green is *actively misleading* about the ninety it doesn't watch. **Highest-value
+M4 item: put the correlations and per-class coverage in `LIVE_NUMBERS`.**
+
+> **Closed same day.** `audit.py` now watches **25 figures** (correlations, per-class counts, σ, the
+> n's), gained a **PROMISES** section that reconciles every test *named in the docs* against what's
+> *built on disk* — the exact gap `assert_lifespan_plausible` hid in for two milestones — and, best
+> of the three, a **BLIND SPOTS** section that prints what it does *not* check and states outright
+> that green means "the figures I watch agree", **not** "the docs are correct". A guard that
+> advertises its own edges is the only kind whose green is worth anything.
+
+### A test DECISIONS ordered and SPEC forgot to list
+
+DECISIONS §3 asked for "range checks on weight **and life span**". SPEC's test list only ever
+carried the weight half (test 6). So `assert_lifespan_plausible` was a **documented test that never
+got built** — invisible, because nothing reconciles "tests DECISIONS asked for" against "tests SPEC
+lists".
+
+Found by asking what actually catches a life span in **months** — the realistic source change,
+"120-180" instead of "10-15". The answer was *nothing*: min ≤ max holds, a number was produced, the
+shape `"X-Y"` is one we know. Every existing test stays green while the whole chart is wrong by 12×.
+Built it, [4, 25], green.
+
+**And I was wrong about its sibling, too.** I'd claimed `assert_weight_mid_plausible` would catch
+mixed-unit strings. It doesn't: `"3.5 kg (7.7 lb)"` → mid 5.6, comfortably inside [0.5, 100]. A
+magnitude check only sees errors big enough to leave the range — which is *why*
+`assert_metric_shape_known` has to exist separately, and why "the range check will catch it" is a
+comfortable lie. Both tests now say so in their own headers, including what they miss. Bounds are
+set from biology, **not fitted** to trap the hypothetical string — tightening them to catch one
+example would be reverse-engineering the test to the answer.
+
+### Smaller things
+
+- **Plan said giant 59/59, warehouse says 58/58.** CLAUDE.md and SPEC both already said 58/58; the
+  plan was the odd one out. Fixed against the warehouse. Toy **29/40** vs giant **58/58** stands —
+  the uneven coverage that goes next to the headline bars is real.
+- **`mart_size_vs_lifespan` keeps all 627 rows, nulls included** — deliberate, and the model says so.
+  Filtering to 585 there would hide the 42 from the one mart whose job is per-breed honesty. The
+  dashboard drops them; `mart_data_coverage` states them.
+- **`Found N data tests` had to move.** SPEC froze it at "post-M2 it must read 26" — true, and dead
+  the moment M3 added models. A watched number needs a *current* expected value or it stops being
+  watched. Now: post-M3, **9 models / 65 data tests**.
+- **The cut stayed cut.** `mart_size_scaling_fit` verified absent from disk *and* warehouse.
+
+### The second close-out: I made the exact mistake I'd just finished diagnosing
+
+The upgraded audit went green — 25 figures, all agreeing. The judgment pass then found **four more
+wrong numbers it couldn't see**, and the first one was mine.
+
+I had written, one screen earlier, that the Day-2 sweep *"fixed the numbers where you look them up
+and missed the numbers where you argue with them."* Then I fixed `59/59 → 58/58` in the plan by
+grepping for `59/59` — and **missed `giant has 59 of 59` in SPEC**, four lines from a table I'd
+already checked, because my pattern matched the slashes and the prose spelled it "of". I diagnosed
+the failure mode in one paragraph and re-committed it in the next. The lesson isn't "grep harder";
+it's that **I searched for the shape I expected the error to have.** The fix that works is to grep
+the *bare* number (`59`) and read every hit, which is what found it the second time.
+
+Worse, the audit was **green while SPEC said 59 of 58**. It watches `size_class giant = 58` and
+found "58" cited in SPEC — in the table on line 435. A wrong 59 elsewhere in the same file is
+invisible to it. That's not a bug; it's the BLIND SPOTS section being *right*: *"whether a number is
+quoted in the RIGHT PLACE"* is precisely what it says it can't check, and here that limitation had
+teeth.
+
+### The dedupe reached further than anyone swept
+
+`DECISIONS.md`'s temperament-lift finding — the one that justified **cutting** the lift mart — still
+carried pre-dedupe numbers: **59% of giants `calm + protective`, ×14.6, n=59**. Live: **60.3%
+(35/58), ×14.9, n=58**.
+
+The cause is verified, not assumed: the duplicate Caucasian Shepherd Dog (ids 70 & 269) is itself a
+**giant** (61 kg), so dedupe took the giant band 59 → 58 and moved every giant statistic. That also
+explains why my recomputation reproduced the **toy** figures *exactly* (60%, ×6.1) and the 4%
+baseline — the bands the dupe never touched. Three of four figures matching is what makes the
+reimplementation trustworthy enough to correct the fourth; had toy moved too, my SQL would have been
+the suspect, not the docs.
+
+Conclusions unchanged — leave-one-out still sharpens giant (**×6.5 → ×14.9**, was ×6.4 → ×14.6), the
+vocabulary still contains no "aggressive" (verified: 0 rows), the claim is still about editorial copy
+rather than behaviour. Exactly the pattern §1 recorded for the correlations: *the counts were all one
+out, the conclusions were fine.* It just reached one document further than the sweep did.
+
+**A bug in my own fix, caught before it shipped:** I first computed the lift as **×15.1** by rounding
+the two percentages and *then* dividing (60.3/4.0). Recomputing from the raw integers gives
+**14.93 → ×14.9**. Rounding before dividing is a real error, not a display choice, and I'd have
+written it into DECISIONS as confidently as the number it replaced.
+
+**Left deliberately un-"fixed":** §3's `pd.cut` anecdote says the SQL prototype got *"59 giants where
+the pandas explorer said 57"*. That is **true history** — pre-dedupe, and the 59-vs-57 *gap* is the
+entire finding about half-open bands. Editing it to 58 would falsify the story to satisfy a grep.
+But sitting three paragraphs from "n=58 giants" it now reads as a contradiction, so it's marked
+`(pre-dedupe)` with the reason. Correct history, current data, no apparent conflict.
+
+### Still open
+
+- **The audit can't see rounded citations.** It reports `mean life toy = 13.34` and `giant = 10.61`
+  as *"not quoted in any doc (fine if it's not a claim)"* — but they **are** claims: CLAUDE.md,
+  SPEC and DECISIONS all quote them as **13.3** and **10.6**, correctly rounded. So two real claims
+  sit outside the guard, and a wrong 13.3 would draw no flag. The honest reading of "23 of 25 found"
+  is *"23 matched literally"*, not *"2 are uncited"*. Worth a rounding-tolerant match, since the
+  docs will always round and the warehouse never will.
+- **Nothing reconciles DECISIONS' *prose findings* against the warehouse.** PROMISES now covers
+  tests; the lift numbers above show the same class of drift in analysis prose, and those figures
+  come from a **cut** analysis no model recomputes — so nothing but a human re-running ad-hoc SQL
+  will ever catch them. The medium/large signatures (`×2.0`, `×2.4`) are **not re-verified** — that
+  needs the full pair search, and the dupe moved their baseline by one row in ~570, which cannot
+  move a one-decimal figure. Stated rather than silently assumed.
+- ~~**`dogs.duckdb` (prod) contains only `raw`**~~ — **closed during M3's close-out.** It held only
+  `raw` when I first looked and the full gold layer twenty minutes later: `dbt build --target prod`
+  had been run. Prod now matches dev exactly (627 / 585 / 42), so M6's demo has a warehouse to read.
+  **The two-target design is doing its job, verified rather than assumed:** `DBT_DUCKDB_PATH` is
+  unset, so dev and prod resolved to their own files and the prod build did not disturb
+  `dogs_dev.duckdb`. Both were built from the same 2026-07-16 ingest — the one partition raw holds.
+- Both M2 items stand: **warns still die in a collapsed log until M5**, and nothing tests the
+  latest-`run_date` filter.
+
+**Next:** M4 — pipeline-level guards (the three distributional warns: `assert_unknown_bucket_small`,
+`assert_row_count_stable`, `assert_lifespan_null_rate_stable` — all three already listed as `todo` by
+the audit's PROMISES section, which is the point of it) and `dbt docs generate` for the lineage
+graph. The SPEC-completeness reconciliation this line used to call for **already shipped**, as
+PROMISES.

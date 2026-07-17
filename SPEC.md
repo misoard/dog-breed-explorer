@@ -82,7 +82,9 @@ The line it draws, worth stating plainly: **a broken wire is an error; unexpecte
 One means the pipeline is lying about its coverage; the other means the world changed.
 
 **Corollary — watch `Found N data tests`.** It is the only cheap check that nothing silently
-vanished. Post-M2 it must read **26**.
+vanished. Post-M2 it read **26**; post-M3 (marts + the bridge + their tests) it must read
+**9 models, 65 data tests**. `scripts/audit.py` prints this first, before the build result,
+for exactly this reason: a number that only ever goes up is easy to stop reading.
 
 ### Source freshness (built in M2)
 
@@ -147,7 +149,6 @@ only secret and never appears here.
 | breed_name | VARCHAR | name (trimmed) |
 | life_span_min_years | INTEGER | split `life_span` on '-', part 1; null if missing/unparseable |
 | life_span_max_years | INTEGER | split part 2 |
-| life_span_mid_years | DOUBLE | (min+max)/2.0 |
 | weight_min_kg | DOUBLE | parse `weight.metric` (see parser below); overall MIN across sexes |
 | weight_max_kg | DOUBLE | overall MAX across sexes |
 | height_min_cm | DOUBLE | parse `height.metric` same way |
@@ -206,8 +207,13 @@ Input examples: `"3.2-4.5"`, `"Male: 25-30; Female: 20-25"`, `"unknown"`.
 | (all stg columns) | | |
 | weight_mid_kg | DOUBLE | (weight_min_kg + weight_max_kg)/2 |
 | height_mid_cm | DOUBLE | (height_min_cm + height_max_cm)/2 — same explicit rule as weight |
+| life_span_mid_years | DOUBLE | (life_span_min_years + life_span_max_years)/2.0 |
 | life_span_range_years | INTEGER | max - min |
 | size_class | VARCHAR | from weight_mid_kg — seed join, see below |
+
+`life_span_mid_years` sits **here, not in staging**, where this spec originally put it. A midpoint
+is a derived opinion — `(min+max)/2` is a RULE, not a fact the API stated — so all three midpoints
+belong on the same side of the silver/gold line. Staging parses; gold decides.
 
 **size_class buckets — FROZEN (confirmed in M0.5 against the real distribution; rationale in
 DECISIONS.md §0).** The boundaries are **data, not code**: they live in the seed
@@ -321,7 +327,20 @@ artifact, not two breeds.
    **Why `warn`, not `error`:** unlike the unit ratio (where a switch to lbs means every number is
    guaranteed wrong), a new notation *might* parse perfectly — erroring would block a good run.
    Warn puts a human in front of it. Follows the rule: invariants error, "the world changed" warns.
-6. range check: `weight_mid_kg` between ~0.5 and ~100 when not null.
+6. range checks (magnitude — both `severity: error`). DECISIONS.md §3 called for range checks on
+   **weight *and* life span**; this entry only ever carried the weight half, so the life-span twin
+   was a documented test that never got built until M3. Both live here rather than as a new number,
+   because both are the same invariant: a midpoint that isn't physically possible.
+   - custom `assert_weight_mid_plausible`: `weight_mid_kg` between ~0.5 and ~100 when not null
+     (observed 1.0 kg Chihuahua → 88.5 kg Mastiff).
+   - custom `assert_lifespan_plausible`: `life_span_mid_years` between ~4 and ~25 when not null
+     (observed 6.5 → 15.0). Catches the source switching to **months** ("120-180" → mid 150),
+     which every other test passes: min ≤ max holds, a number was produced, the shape is known.
+
+   **What a range check does NOT catch** — worth stating, because "the range check will get it" is
+   a comfortable lie: `"3.5 kg (7.7 lb)"` → mid 5.6 sits comfortably inside the weight bounds. A
+   magnitude check only sees errors big enough to leave the range. Mixed-unit and compound strings
+   are `assert_metric_shape_known`'s job (test 5, warn — verified: both fail the shape match).
 7. `breed_temperaments`: `relationships` breed_id → `dim_breeds`, plus custom
    **`assert_tag_unique_per_breed`** — `unique` on the COMBINATION (breed_id, temperament), so it
    must be a singular test (dbt's built-in `unique` is single-column; dbt_utils isn't worth a
@@ -418,7 +437,7 @@ on `size_class` is drift waiting to happen.
   Two things the mean alone hides, both worth saying in the narrative: **the spread grows with size**
   (0.68 → 1.54 — giant breeds are shorter-lived *and* less predictable), and the toy→giant gap
   (2.7 yr) is **under 2σ of the giant band**, so the distributions overlap heavily. The trend is real
-  in the mean and weak per-dog. Without the std, the chart oversells −0.671 exactly the way §0 says
+  in the mean and weak per-dog. Without the std, the chart oversells −0.670 exactly the way §0 says
   the bar chart would.
 - **`mart_size_vs_lifespan`** — grain: **breed** (one row per breed, ready to scatter).
   `breed_id, breed_name, size_class, weight_mid_kg, life_span_mid_years`.
@@ -457,7 +476,7 @@ on `size_class` is drift waiting to happen.
   | no temperament | **1** (Mongrel — its tag is a sentinel, excluded) → bridge covers **626** of 627, 3,538 rows |
 
   **Why this is not cosmetic:** the missing life spans are *not evenly spread*. **Toy has 29 of 40**
-  (27.5% missing); **giant has 59 of 59** (0%). So the toy bar at 13.3 yr rests on 72% of toy breeds
+  (27.5% missing); **giant has 58 of 58** (0%). So the toy bar at 13.3 yr rests on 72% of toy breeds
   and the giant bar on 100% — a real bias in the headline chart that no reader could detect. A
   dashboard that says "627 breeds" while plotting 585 is quietly lying. Reading `n_breeds = 585` off
   `mart_metric_correlation` gives the same number, which is a good consistency check on both.
@@ -504,7 +523,7 @@ denominator (`breeds_with_life_span`) belongs next to the bars too.
    brief names — on the dashboard as a headline fact rather than only a bridge table nobody looks at.
 
 **"Size" is defined as weight**, not height, and the correlation mart is the evidence: weight↔life
-−0.671 vs height↔life −0.503, and height↔weight 0.860 means height adds little once weight is in.
+−0.670 vs height↔life −0.502, and height↔weight 0.860 means height adds little once weight is in.
 Stated in DECISIONS.md §0. The correlation numbers **render on the dashboard** (they're about life
 span, which is the question) — but as numbers, not as a fitted curve.
 

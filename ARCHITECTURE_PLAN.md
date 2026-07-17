@@ -99,9 +99,11 @@ dog-breed-explorer/
 │     ├─ assert_pct_of_class_sane.sql        # error — catches a bridge-join fan-out
 │     ├─ assert_size_class_bands_cover.sql   # error — seed contiguous, no gaps/overlaps [M3]
 │     ├─ assert_no_breed_unbanded.sql        # error — a real weight always finds a band [M3]
-│     ├─ assert_unknown_bucket_small.sql     # warn  — distributional guards (M4)
-│     ├─ assert_row_count_stable.sql         # warn
-│     └─ assert_lifespan_null_rate_stable.sql # warn
+│     ├─ assert_weight_mid_plausible.sql     # error — magnitude; SPEC test 6 [M3]
+│     ├─ assert_lifespan_plausible.sql       # error — magnitude; months-for-years [M3]
+│     ├─ assert_unknown_bucket_small.sql     # warn  — distributional guards [M4]
+│     ├─ assert_row_count_stable.sql         # warn — [M4]
+│     └─ assert_lifespan_null_rate_stable.sql # warn — [M4]
 │
 ├─ dashboard/
 │  └─ app.py                     # M6: Streamlit; reads gold marts; renders 2+ questions (thin)
@@ -235,40 +237,63 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 > describe the finished pipeline ("628 ±5%") and can't be asserted against a half-built DAG.
 
 **M3 — dbt marts/gold (Day 3 pm)** — build to SPEC.md · same interleaved test loop as M2
-- [ ] The `size_class_bands` **seed first** — `dim_breeds` joins it, so it exists before the model
+- [x] The `size_class_bands` **seed first** — `dim_breeds` joins it, so it exists before the model
       that needs it. Boundaries live ONLY there. Tests: `assert_size_class_bands_cover` (contiguous,
       no gaps/overlaps).
-- [ ] `dim_breeds` (clean typed + derived: weight_mid_kg, size_class, life_span_range).
+      → `seeds/size_class_bands.csv`, 5 rows (0/5/12/25/45/999); `assert_size_class_bands_cover` +
+      `assert_no_breed_unbanded` green. Half-open `[min, max)` in the join (`>= min_kg AND < max_kg`).
+- [x] `dim_breeds` (clean typed + derived: weight_mid_kg, size_class, life_span_range).
       Tests with it: unique+not_null(breed_id), accepted_values(size_class incl. 'unknown'),
       `assert_no_breed_unbanded`, weight_mid range check.
-- [ ] `breed_temperaments` bridge (normalised tag). Tests with it: relationships → dim_breeds,
+      → **627 rows** (post-dedupe). Derived: `weight_mid_kg`, `height_mid_cm`, `life_span_mid_years`,
+      `life_span_range_years`, `size_class`. Range checks green: `assert_weight_mid_plausible`
+      [0.5, 100] + `assert_lifespan_plausible` [4, 25] (the life-span half DECISIONS §3 asked for
+      and SPEC never listed — built here). `size_class = 'unknown'` = 2 of 627 (0.3%).
+- [x] `breed_temperaments` bridge (normalised tag). Tests with it: relationships → dim_breeds,
       **unique on (breed_id, temperament)** (load-bearing — a dup tag double-counts every
       aggregate), `assert_tag_not_freetext` (warn).
-- [ ] The marts for the chosen questions (names canonical in SPEC.md): `mart_size_class_summary`
+      → **3,538 rows**, 45 distinct tags, 626 breeds with a tag. `relationships` +
+      `assert_tag_unique_per_breed` + `assert_tag_lowercased` green; `assert_tag_not_freetext` warn = 0.
+- [x] The marts for the chosen questions (names canonical in SPEC.md): `mart_size_class_summary`
       (size_class grain), `mart_size_vs_lifespan` (breed grain — **no `height_mid_cm`**, its only
       readers were cut), `mart_metric_correlation` (**pairwise** population, carries `n_breeds`).
-- [ ] `mart_size_class_temperaments` — grain (size_class, temperament); `GROUP BY` + `COUNT` over
+      → 6 / 627 / 3 rows respectively. `mart_size_vs_lifespan` has no `height_mid_cm` (verified) and
+      **keeps null rows on purpose** — the 42 excluded are the dashboard's to drop, and
+      `mart_data_coverage` states them. Correlations live: weight↔life **−0.670** (585),
+      height↔life **−0.502** (585), height↔weight **0.860** (625).
+- [x] `mart_size_class_temperaments` — grain (size_class, temperament); `GROUP BY` + `COUNT` over
       `ref('breed_temperaments')` × `ref('dim_breeds')`, plus **`pct_of_class`** (count / breeds in
       class) so big classes don't win on raw counts alone. Top-N stays in the dashboard, not gold.
       Tests with it: unique(size_class, temperament), `assert_pct_of_class_sane`
       (`breed_count <= breeds_in_class`, pct in (0,100]) — the inequality is what catches a
       fan-out in the bridge join.
-- [ ] `mart_data_coverage` — one row: what every chart drops (**627** total, **585** plotted, 42
+      → **134 rows**. `assert_pct_of_class_sane` green (no fan-out). No lift, no baseline — top-N
+      left to the dashboard, as specified.
+- [x] `mart_data_coverage` — one row: what every chart drops (**627** total, **585** plotted, 42
       excluded; **626** with a temperament — Mongrel's tag is a sentinel).
       The dashboard prints it beside each chart. Life-span coverage is **uneven by class** (toy
-      29/40 vs giant 59/59), which is a real bias in the headline chart — so `breeds_with_life_span`
+      29/40 vs giant 58/58), which is a real bias in the headline chart — so `breeds_with_life_span`
       goes next to the bars too.
-- [ ] **CUT: `mart_size_scaling_fit`** and the height-vs-weight curve. An isometry exponent is not a
+      → 1 row, verified live: total 627 · weight 625 · life span 587 · both 585 · temperament 626 ·
+      plotted 585 · excluded 42. Per-class coverage confirmed toy **29/40** vs giant **58/58**
+      (the plan said 59/59 — corrected against the warehouse).
+- [x] **CUT: `mart_size_scaling_fit`** and the height-vs-weight curve. An isometry exponent is not a
       fact about a dog breed — the rule is *descriptive fact → gold, inferential cleverness →
       DECISIONS.md §0*. Don't rebuild it.
-- [ ] **`contract: {enforced: true}` on the models the DAG can't protect** — the 5 marts the
+      → Verified absent: no table matching `%scaling%` in the warehouse, no model on disk. Stayed cut.
+- [x] **`contract: {enforced: true}` on the models the DAG can't protect** — the 5 marts the
       dashboard reads (`mart_size_class_summary`, `mart_size_vs_lifespan`,
       `mart_size_class_temperaments`, `mart_metric_correlation`, `mart_data_coverage`) **+
       `breed_temperaments`** (the brief's "queryable" deliverable — its reader is a human with SQL,
       also outside the DAG; only 3 columns). **NOT `dim_breeds`** (~18 columns, read only via
       `ref()` → already DAG-protected) and NOT staging (**a constraint on a view is silently
       ignored — verified**). Rationale + the cost in DECISIONS.md §3.
-- [ ] Business logic lives HERE, not in the dashboard.
+      → Verified in `models/marts/_marts.yml`: **6 enforced** (`breed_temperaments` + the 5 marts),
+      `dim_breeds` deliberately not. Exactly the intended split.
+- [x] Business logic lives HERE, not in the dashboard.
+      → Parsing in staging, midpoints/banding/aggregates in gold. The seed is the only home of the
+      boundaries; `pct_of_class` is computed in the mart, not the dashboard. No dashboard exists yet
+      (M6) — this is re-checked when one does.
 
 **M4 — Pipeline-level guards + docs (Day 3 pm)**
 > **The per-model TDD loop already ran in M2/M3** — the hard invariants were declared *with* their

@@ -124,8 +124,9 @@ more time" (§3) — that costs nothing and can be built in an hour if a reviewe
 
 **The finding.** Folk belief says big dogs are aggressive. **The word "aggressive" does not occur
 once in the 46-tag vocabulary** — nor do "territorial" or "stubborn"; the vocabulary is uniformly
-positive. What the descriptions *do* say: **59% of giants are `calm + protective` vs 4% of every
-other band (×14.6)**, while **60% of toys are `affectionate + playful` vs 10% elsewhere (×6.1)**.
+positive. What the descriptions *do* say: **60% of giants are `calm + protective` (35/58) vs 4% of
+every other band (23/569) — ×14.9**, while **60% of toys are `affectionate + playful` vs 10%
+elsewhere (×6.1)**.
 Medium and large have no strong signature (best ×2.0 and ×2.4). The claim I'd make: *"breed
 descriptions associate size with calm and protective, not with aggression"* — a statement about
 **editorial copy, not behaviour**. The absence of "aggressive" is a fact about who writes breed
@@ -141,8 +142,8 @@ it isn't.
 - **Baseline = all *other* bands (leave-one-out), not the overall average.** Medium + large are
   **68% of breeds**, so lift-vs-overall compares them largely against themselves — they cannot
   deviate from a baseline they dominate, which manufactures "the middle is boring". Leave-one-out
-  removes that artifact and sharpens every band: giant's headline goes **×6.4 → ×14.6**.
-- **Not tested for significance.** "Distinctive", never "significant". 59%-vs-4% at n=59 giants is
+  removes that artifact and sharpens every band: giant's headline goes **×6.5 → ×14.9**.
+- **Not tested for significance.** "Distinctive", never "significant". 60%-vs-4% at n=58 giants is
   not chance by any reasonable standard; medium's ×2.0 would need a test before leaning on it.
 
 ### Choosing the `size_class` boundaries (5 / 12 / 25 / 45 kg)
@@ -172,7 +173,9 @@ hit (below). `accepted_values` on `size_class` tests against the seed (§3).
 **Convention: bands are half-open `[min_kg, max_kg)`.** Lower bound inclusive, upper exclusive — so
 a breed at **exactly 45.0 kg is `giant`**, not `large`; at exactly 25.0 kg it is `large`, not
 `medium`. This is not pedantry. I found it by prototyping the mart in SQL and getting **59 giants
-where the pandas explorer said 57**: `pd.cut` defaults to *right*-closed `(min, max]`, my `CASE WHEN
+where the pandas explorer said 57** (both **pre-dedupe** — the same prototype today gives 58, since
+the duplicate Caucasian Shepherd is itself a giant; the 59-vs-57 *gap* is the finding, not the 59):
+`pd.cut` defaults to *right*-closed `(min, max]`, my `CASE WHEN
 mid < 45 THEN 'large' ELSE 'giant'` is half-open, and the two silently disagree.
 **31 breeds — 5% of the dataset — sit exactly on a boundary** (23 on 25 kg alone; Cane Corso and
 Estrela Mountain Dog on 45). Left unstated, DECISIONS.md would quote one number and a reviewer
