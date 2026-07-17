@@ -22,10 +22,18 @@ and built a disposable Streamlit explorer (`exploration/explore_app.py`) to eyeb
 settle the size buckets. Both are **scratch, deleted after this milestone** — the dashboard reads the
 gold marts, never that rough in-app parse. What the exploration decided:
 
-**Shape of the source.** 628 breeds; `id` unique and non-null (**primary key confirmed**). Weight
-parses for 626/628 (the 2 misses are `'unknown'` string sentinels), `life_span` for 588 (6.4% null).
-So every chart below runs on ~586 breeds with weight + life span both present — small enough that
-the honest framing is "descriptive of this dataset", not inferential.
+**Shape of the source.** **628 breeds in raw; 627 in `dim_breeds`** after the Caucasian Shepherd
+dedupe — the two are not interchangeable and every gold-grain number below is post-dedupe. `id` is
+unique and non-null (**primary key confirmed**). Weight parses for **625/627** (the 2 misses are
+`'unknown'` sentinels), `life_span` for **587** (6.4% null). So every chart below runs on **585
+breeds** with weight + life span both present — small enough that the honest framing is
+"descriptive of this dataset", not inferential.
+
+> **Caught late, worth recording:** every figure in this file and SPEC was first computed **pre-dedupe**,
+> because the M0.5 explorer never deduped. The dedupe is a *staging* decision made after the numbers
+> were taken. Conclusions are unchanged (−0.671 → −0.670), but the counts were all one out — the
+> expected distribution said `giant 59 … = 628` when `dim_breeds` yields `giant 58 … = 627`, which
+> would have failed the row-count guard on day one. Recomputed post-dedupe throughout.
 
 ### What I'm putting on the dashboard, and why the data earned it
 
@@ -46,6 +54,19 @@ the honest framing is "descriptive of this dataset", not inferential.
   chart hides: the decline is **flat across toy→medium (13.3 → 13.0) then drops sharply** for large
   and giant. The size penalty is a *large-and-giant* effect, not a smooth gradient — worth stating
   plainly rather than implying a straight line.
+- **±1σ error bars on the mean-life-span line** (`stddev_life_span_years`, added to the same mart).
+  The mean alone oversells the finding, which is the exact sin §0 already refuses on the dual axis.
+  Two facts only the std shows: **the spread grows with size** (σ 0.68 small → **1.54 giant** — giant
+  breeds are shorter-lived *and* less predictable), and the toy→giant gap of 2.7 yr is **under 2σ of
+  the giant band**, so the distributions overlap heavily. Honest claim: *the trend is real in the
+  mean and weak for any individual dog.* A bare mean line invites the reader to conclude the
+  opposite.
+- **Every chart prints its population** (`mart_data_coverage`): "585 of 627 breeds; 42 excluded for
+  missing weight or life span". This is not pedantry — **the missing life spans are not evenly
+  spread**: toy has **29 of 40** (27.5% missing), giant has **58 of 58** (0%). The toy bar rests on
+  72% of toy breeds, the giant bar on 100%, and nothing on the chart says so. A dashboard that prints
+  "627 breeds" above a plot drawn from 585 is quietly lying; exposing the denominator costs one line
+  and is the difference between a chart and a claim.
 - **Weight vs life-span scatter.** Kept because the means hide the spread. Overall correlation is
   **−0.67**, but within any single band it's only ~−0.1 to −0.4. So: *knowing a dog's size class
   tells you a lot; knowing one giant outweighs another tells you little.* The scatter shows that
@@ -64,10 +85,10 @@ the honest framing is "descriptive of this dataset", not inferential.
     inference. That distinction is exactly the line between this mart and the pair-lift one below.
   - **Top-N lives in the dashboard, not the mart.** Gold holds every (class, tag) pair; the read
     layer takes the top 3–5. Bake the cut into gold and you can't change it without a rebuild.
-- **3×3 correlation matrix (weight / height / life span).** Enough on its own: weight~life **−0.67**,
-  height~life **−0.503**, weight~height **0.860**. It justifies a modeling choice in one glance —
+- **3×3 correlation matrix (weight / height / life span).** Enough on its own: weight~life **−0.670**
+  (n=585), height~life **−0.502** (n=585), weight~height **0.860** (n=625). It justifies a modeling choice in one glance —
   **weight is the better size proxy**: it predicts life span more strongly, and because weight and
-  height are 0.860-coupled, height adds little once weight is in. Height's −0.503 is largely borrowed
+  height are 0.860-coupled, height adds little once weight is in. Height's −0.502 is largely borrowed
   from weight. (The case asks about "size" without defining it; this is where I define it as weight,
   and why.)
 
@@ -159,7 +180,7 @@ re-running the model would get another, and the reproducibility of everything el
 fairly doubted. Stating the convention *is* the deliverable; the seed makes it enforceable.
 
 Under the frozen bands + half-open convention: **toy 40 · small 104 · medium 220 · large 203 ·
-giant 59** (626 breeds with a parsed weight), mean life span **13.3 / 13.2 / 13.0 / 12.2 / 10.6**.
+giant 58** (625 breeds with a parsed weight, post-dedupe), mean life span **13.3 / 13.2 / 13.0 / 12.2 / 10.6**.
 
 ### Units: the source never declares them
 
@@ -283,6 +304,7 @@ surfaced the missing-unit risk.
   | `mart_size_vs_lifespan` | breed | the per-breed scatters |
   | `mart_metric_correlation` | (metric_a, metric_b) | the correlation numbers + the size=weight evidence |
   | `mart_size_class_temperaments` | (size_class, temperament) | top tags per size class, as % of class |
+  | `mart_data_coverage` | one row | what each chart drops — 627 total, 585 plotted |
 
   `dim_breeds` carries `weight_min_kg` / `weight_max_kg` / `weight_mid_kg` (same shape for height and
   life span) plus `size_class` — min/max/mid as separate typed columns so the midpoint rule is
@@ -295,8 +317,8 @@ surfaced the missing-unit risk.
   rather than recomputed live by the read layer — the same "logic lives in gold" line I draw
   everywhere else. It carries **`n_breeds`**, because a correlation without its population is not a
   fact — and the population choice moves the number: **pairwise** (each pair uses its own non-null
-  rows) gives height↔weight **0.860** on 626 breeds, where **listwise** (breeds with all three
-  metrics) gives **0.851** on 586. SPEC fixes pairwise; the earlier figures in this file were
+  rows) gives height↔weight **0.860** on 625 breeds, where **listwise** (breeds with all three
+  metrics) gives **0.851** on 585. SPEC fixes pairwise; the earlier figures in this file were
   listwise, from the pandas explorer.
 
   **Cut before building: `mart_size_scaling_fit`** (the isometry fit, `weight ~ height^k`, k=2.07,
@@ -317,6 +339,17 @@ surfaced the missing-unit risk.
   - `life_span` "12-15" (no "years" suffix; 6.4% null) → `life_span_min_years`, `life_span_max_years`, midpoint
   - `weight`/`height` `.metric` → `weight_min_kg`, `weight_max_kg` (+ height) — see units note below
   - `temperament` comma-list → bridge table `breed_temperaments`, tags **lowercased+trimmed** (66→46 tags once case-folded)
+
+  **Why a bridge, and does it scale?** The comma string is the thing that *doesn't* scale: you cannot
+  index, group or join it at any size — `LIKE '%playful%'` is a full scan that also matches the wrong
+  rows. The bridge is one row per (breed, tag): **3,544 rows** today (628 breeds × ~5.6 tags). This is
+  the standard star-schema many-to-many, and columnar engines are built for exactly this shape —
+  at 100k breeds it's ~560k rows, still trivial for DuckDB. **The grain is the right call at any
+  size**; what changes with scale is two mechanical optimizations, neither altering the shape:
+  **dictionary-encode the tag** (`tag_id INT` + a `dim_temperament` lookup, instead of repeating the
+  string `"intelligent"` 536 times) and cluster/partition on the join key. At *this* size both would
+  be premature — 3.5k rows of short strings is nothing, and an int key would cost a join to read.
+  Noted here so the scaling answer is a decision, not an omission.
   - `size_class` derived from weight midpoint → **5 / 12 / 25 / 45 kg**, fixed constants, data-informed but frozen (rationale in §0)
   - `'unknown'` string sentinels (2 weight, 2 height) → NULL **before** casting, else they poison numeric parsing
   - duplicate "Caucasian Shepherd Dog" (ids 70 & 269) → dedupe in staging, keep more-complete row
@@ -363,6 +396,14 @@ surfaced the missing-unit risk.
     distribution. Silent, passing, and visible only to whoever wonders why the chart looks wrong.
     The guards turn that into a red flag — the same job `assert_unit_ratio_plausible` already does
     for the inferred units, generalised to nulls and counts.
+  - **A `warn` nobody sees is not a signal — it's a comment.** dbt prints WARN to stdout and exits
+    **0**, so CI goes green and the warning dies in a collapsed log. Choosing `warn` severity is
+    therefore only half a decision; the other half is *making it visible*. M5's CI parses
+    `target/run_results.json` and emits GitHub `::warning::` annotations plus a job-summary table —
+    visible on the PR and the run page, **without failing the build**, which is exactly the point of
+    warn. Same principle as the red-cron-nobody-sees note in §5. Without this step the entire
+    warn/error split is theatre: I'd have carefully classified tests into a bucket that no human
+    ever reads.
   - **Scoped to three, on purpose.** `unknown` bucket ≤ 1%, row count ±5%, life-span null rate
     ≤ 10%. The `unknown` guard is the most valuable because it defends a *chosen deliverable* — the
     weight-distribution chart is visibly wrong the moment that bucket grows. Three wired properly

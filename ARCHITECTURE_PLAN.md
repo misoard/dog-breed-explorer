@@ -79,13 +79,17 @@ dog-breed-explorer/
 │  │     ├─ mart_size_class_summary.sql  # grain: size_class — counts + mean life span
 │  │     ├─ mart_size_vs_lifespan.sql    # grain: breed — scatter-ready (no height: no reader)
 │  │     ├─ mart_metric_correlation.sql  # grain: (metric_a, metric_b) — 3 rows + n_breeds
-│  │     └─ mart_size_class_temperaments.sql  # grain: (size_class, tag) — count + % of class
+│  │     ├─ mart_size_class_temperaments.sql  # grain: (size_class, tag) — count + % of class
+│  │     └─ mart_data_coverage.sql       # one row — 628 total / 586 plotted / what's dropped
 │  │                                     # (mart_size_scaling_fit CUT — an isometry exponent is
 │  │                                     #  not a "fact about dog breeds"; see DECISIONS.md §0)
 │  └─ tests/                     # custom SQL tests (return rows = fail)
 │     ├─ assert_weight_min_le_max.sql        # error — invariants
 │     ├─ assert_lifespan_min_le_max.sql      # error
-│     ├─ assert_no_unknown_sentinel.sql      # error — guards FUTURE runs
+│     ├─ assert_metric_parsed.sql            # error — a string we didn't understand
+│     │                                      #   (supersedes assert_no_unknown_sentinel)
+│     ├─ assert_metric_shape_known.sql       # warn  — the notation-change flag
+│     ├─ assert_pct_of_class_sane.sql        # error — catches a bridge-join fan-out
 │     ├─ assert_size_class_bands_cover.sql   # error — seed contiguous, no gaps/overlaps
 │     ├─ assert_no_breed_unbanded.sql        # error — a real weight always finds a band
 │     ├─ assert_unit_ratio_plausible.sql     # error — units inferred, not declared
@@ -184,7 +188,14 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       CLAUDE.md/DECISIONS.md §1; without it, a second local run double-counts every breed).
 - [ ] `stg_breeds.sql`: the metric range parser (handles simple
       `X-Y`, sex-specific `Male:…;Female:…`, and `'unknown'`→NULL), type everything, drop dead
-      fields (species_id, bred_for, perfect_for, country_codes), **dedupe the Caucasian Shepherd**.
+      fields (species_id, bred_for, perfect_for, country_codes), **dedupe the Caucasian Shepherd**
+      (`qualify row_number() over (partition by breed_name order by n_missing_fields, breed_id) = 1`
+      — the two rows TIE on completeness, so `breed_id` is what actually decides; keep it
+      deterministic or the bridge changes between runs).
+      Tests with it: `assert_weight_min_le_max`, `assert_lifespan_min_le_max`,
+      **`assert_metric_parsed`** (error — supersedes `assert_no_unknown_sentinel`),
+      **`assert_metric_shape_known`** (warn — the notation flag), `assert_unit_ratio_plausible`
+      (error, median ratio in [2.095, 2.315] weight / [2.413, 2.667] height).
 - [ ] `stg_breed_temperaments.sql`: split comma list, **lowercase+trim** each tag (casing fix).
 - [ ] Commit per meaningful step. This is the hardest piece — understand the parser line by line.
 
@@ -221,6 +232,10 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       Tests with it: unique(size_class, temperament), `assert_pct_of_class_sane`
       (`breed_count <= breeds_in_class`, pct in (0,100]) — the inequality is what catches a
       fan-out in the bridge join.
+- [ ] `mart_data_coverage` — one row: what every chart drops (628 total, 586 plotted, 42 excluded).
+      The dashboard prints it beside each chart. Life-span coverage is **uneven by class** (toy
+      29/40 vs giant 59/59), which is a real bias in the headline chart — so `breeds_with_life_span`
+      goes next to the bars too.
 - [ ] **CUT: `mart_size_scaling_fit`** and the height-vs-weight curve. An isometry exponent is not a
       fact about a dog breed — the rule is *descriptive fact → gold, inferential cleverness →
       DECISIONS.md §0*. Don't rebuild it.
@@ -246,6 +261,13 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       with a real API call attached, which is what catches the API changing shape or the key
       expiring. Not a deployment; say so out loud rather than letting it look like an oversight.
 - [ ] **`DOG_API_KEY` as an Actions secret** — the cron 403s without it. Nothing else is secret.
+- [ ] **Make `warn` visible, or it isn't a signal.** dbt prints WARN to stdout and exits 0 — so CI
+      goes green and the warning dies in a collapsed log. Parse `target/run_results.json` and emit
+      GitHub `::warning::` annotations + a `$GITHUB_STEP_SUMMARY` table, so warns show on the PR and
+      the run page **without failing the build** (which would defeat the point of warn severity).
+      Same principle as "a red cron nobody sees is a cron that isn't running" (DECISIONS.md §5).
+      Applies to all four warns: `assert_metric_shape_known`, `assert_unknown_bucket_small`,
+      `assert_row_count_stable`, `assert_lifespan_null_rate_stable`, `assert_tag_not_freetext`.
 
 **M6 — Dashboard + narrative (Day 4 pm)**
 - [ ] Streamlit reads the gold marts from the **local `dogs.duckdb`** (the prod target build) and is
@@ -267,7 +289,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 - [ ] Batch all 628 in one pass, cache by breed_id, prompt + cost/latency note + light eval
       (`accepted_values` on the enum — LLM output is untrusted input — plus a few hand-labels).
 
-**M8 — Polish & submit (Day 5, ≥24h before Tue 11am → submit by Mon 11am)**
+**M8 — Polish & submit (Day 5, ≥24h before Wed 11am → submit by Tue 11am)**
 - [ ] Finish DECISIONS.md incl. "what I'd do next".
 - [ ] Rehearse: walk any dbt model, explain `ref()` + the lineage graph, one decision I'm proud of + one I'd change.
 - [ ] Submit repo link with read access.

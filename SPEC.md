@@ -28,6 +28,7 @@ Business logic lives in dbt gold; the dashboard stays thin.
 | gold | `mart_size_vs_lifespan` | dbt | grain: breed — scatter-ready (weight + life span only) |
 | gold | `mart_metric_correlation` | dbt | grain: (metric_a, metric_b) — 3 rows + `n_breeds` |
 | gold | `mart_size_class_temperaments` | dbt | grain: (size_class, temperament) — count + % within class |
+| gold | `mart_data_coverage` | dbt | one row — what each chart drops (627 total, 585 plotted) |
 | seed | `size_class_bands` | dbt seed | the ONLY home of the bucket boundaries |
 
 ## Materialization & schemas
@@ -126,6 +127,23 @@ only secret and never appears here.
 | temperament_raw | VARCHAR | keep raw string for reference/enrichment |
 | image_url | VARCHAR | image.url (nullable, 14.3% null) |
 | loaded_at | TIMESTAMP | from raw |
+| n_missing_fields | INTEGER | count of null/empty fields on the raw row — **dedupe tiebreak only** |
+
+**`n_missing_fields`** exists for exactly one job: ordering the dedupe. It is the count of
+null/empty values across the source fields on that raw row:
+
+```sql
+(case when payload->>'description' is null or trim(payload->>'description') = '' then 1 else 0 end +
+ case when payload->>'origin'      is null or trim(payload->>'origin')      = '' then 1 else 0 end +
+ ... one term per source field ...) as n_missing_fields
+```
+
+**Verified against the real dupe, and it does NOT decide it:** ids 70 and 269 each have **exactly 2
+empty fields of 17**, and both have an image. They tie — so the rule falls through to `breed_id` and
+**70 wins**. The tiebreak isn't decoration, it's the thing that actually resolves this case, and it
+must be deterministic or the bridge contents change between runs (the two rows carry *different*
+temperaments: 70 has `alert`, 269 has `loyal`). `n_missing_fields` stays in the rule because a
+future duplicate may not be tied.
 
 **Dropped with reason:** `species_id` (constant=2), `bred_for` (100% null), `perfect_for`
 (100% null), `country_codes` (== country_code), `reference_image_id` (redundant with image),
@@ -190,7 +208,8 @@ CASE WHEN weight_mid_kg IS NULL THEN 'unknown' ELSE <range join> END
 That keeps the seed honest (ranges only) and makes "where does the null live" a deliberate decision
 rather than a fallback. Affects exactly **2 breeds** — Langqing (518) and Mongrel (536), the
 `'unknown'` weight sentinels. Expected distribution: **toy 40 · small 104 · medium 220 · large 203 ·
-giant 59 · unknown 2 = 628**.
+giant 58 · unknown 2 = 627** — **post-dedupe** (the Caucasian Shepherd removed from `giant`).
+Raw holds 628; `dim_breeds` holds **627**. Every count below is post-dedupe.
 
 ## breed_temperaments (bridge)
 | Column | Type | Notes |
@@ -219,8 +238,29 @@ artifact, not two breeds.
    'unknown'` — i.e. a real weight always finds a band. Catches a seed range that doesn't reach.
 3. custom `assert_weight_min_le_max`: rows where `weight_min_kg > weight_max_kg` → must be empty.
 4. custom `assert_lifespan_min_le_max`: rows where `life_span_min_years > life_span_max_years` → empty.
-5. custom `assert_no_unknown_sentinel`: rows in stg where any numeric source still equals 'unknown'
-   → empty (guards against a NEW sentinel in a future daily run).
+5. custom **`assert_metric_parsed`**: rows in stg where a raw metric string was present but produced
+   no number → empty. **Supersedes the old `assert_no_unknown_sentinel`**, which only looked for the
+   literal `'unknown'`. This is the general form — "we had a string and didn't understand it" —
+   so it catches `'unknown'`, `'N/A'`, `''`, and every sentinel the API invents next:
+   ```sql
+   select * from {{ ref('stg_breeds') }}
+   where (weight_raw    is not null and weight_min_kg       is null)
+      or (height_raw    is not null and height_min_cm       is null)
+      or (life_span_raw is not null and life_span_min_years is null)
+   ```
+5b. custom **`assert_metric_shape_known`** (**warn**) — **the notation-change flag.** The raw metric
+   string must match one of the three profiled shapes (each with an optional unit suffix):
+   `X-Y` · `Male: X-Y; Female: A-B` · bare `X`. Anything else means the source changed how it writes
+   measurements.
+   **Why this test has to exist separately:** the parser extracts *every number and takes min/max*,
+   which is deliberately shape-blind — that's its strength (`"12 years - 13 years"` → 12/13 and
+   `"3-5kg"` → 3/5 both work for free, verified). But it is also its ceiling: **a regex sees numbers,
+   not meaning.** `"3.5 kg (7.7 lb)"` parses to 3.5/7.7 — mixing units — and `"2 years 6 months"` to
+   2/6 instead of 2.5. Both are *silently wrong*: `min <= max` holds, the PK is fine, nothing else
+   fires. Only a shape check catches them.
+   **Why `warn`, not `error`:** unlike the unit ratio (where a switch to lbs means every number is
+   guaranteed wrong), a new notation *might* parse perfectly — erroring would block a good run.
+   Warn puts a human in front of it. Follows the rule: invariants error, "the world changed" warns.
 6. range check: `weight_mid_kg` between ~0.5 and ~100 when not null.
 7. `breed_temperaments`: `relationships` breed_id → `dim_breeds`, **plus `unique` on the
    combination (breed_id, temperament)** — load-bearing: a duplicated tag would double-count any
@@ -229,9 +269,17 @@ artifact, not two breeds.
    the literal tag `"variable depending on ancestry and individual traits"` — a sentence in a
    controlled vocabulary. Catches the whole class, not that one instance.
 8. `dim_breeds`: assert row count == distinct breeds after dedup (catches the dup regressing).
-9. custom `assert_unit_ratio_plausible`: on raw/staging, the median imperial:metric ratio must
-   stay near 2.205 (weight) / 2.54 (height) — units are inferred, not declared, so this catches a
-   silent source unit change. (Tolerance e.g. ±5%.)
+9. custom `assert_unit_ratio_plausible`: units are inferred, not declared, so this is the tripwire
+   for a silent source unit change (e.g. metric quietly becoming pounds — every number stays valid,
+   every other test passes, the whole dashboard is wrong by 2.2×).
+   **"Near" is not a spec — the literal bounds, ±5%:**
+   | metric | ratio | accept if median is in | observed |
+   |---|---|---|---|
+   | weight | lb/kg = 2.205 | **[2.095, 2.315]** | **2.200** ✓ |
+   | height | in/cm = 2.54 | **[2.413, 2.667]** | **2.542** ✓ |
+   Computed as `median(imperial_min / metric_min)` over rows where both parse and `metric_min > 0`.
+   Median, not mean, so a single bad row can't drag it. `severity: error` — a unit switch is not
+   drift, it is broken data.
 9b. `mart_size_class_temperaments`: `unique` on the combination **(size_class, temperament)** — the
    grain; a duplicate would double-count a tag and inflate `pct_of_class`. `not_null` on all three
    keys. `accepted_values` on `size_class` (same six labels). Plus custom
@@ -252,11 +300,11 @@ legitimate growth is worse than surfacing it loudly for a human to judge. Use db
 `error_if` if a catastrophic band is wanted (e.g. warn at 5% deviation, error at 25%).
 
 10. custom `assert_unknown_bucket_small` (**warn**): `size_class = 'unknown'` must be **≤ 1%** of
-    `dim_breeds` (expected: 2 of 628 = 0.3%). **The highest-value guard of the three** — it directly
+    `dim_breeds` (expected: 2 of 627 = 0.3%). **The highest-value guard of the three** — it directly
     defends a chosen deliverable: if `unknown` balloons, the weight-distribution chart is visibly
     wrong while every hard test still passes.
 11. custom `assert_row_count_stable` (**warn**): `dim_breeds` row count within **±5%** of the
-    expected ~628.
+    expected **~627** (dim_breeds, post-dedupe — NOT raw's 628).
 12. custom `assert_lifespan_null_rate_stable` (**warn**): `life_span_mid_years` null rate **≤ ~10%**
     (observed: 6.4%).
 
@@ -275,10 +323,29 @@ on `size_class` is drift waiting to happen.
 
 - **`mart_size_class_summary`** — grain: **size_class** (6 rows incl. `unknown`).
   `size_class, breed_count, breeds_with_life_span, mean_life_span_years, median_life_span_years,
-  mean_weight_kg, mean_height_cm`.
+  **stddev_life_span_years**, **min_life_span_years**, **max_life_span_years**, mean_weight_kg,
+  mean_height_cm`.
   Serves the count bars **and** the mean-life-span line **and** the numbers table. `breed_count`
   counts all breeds in the class; `mean_life_span_years` averages only those with a life span
   (6.4% null), so **both denominators are exposed** rather than one being silently implied.
+
+  **`stddev_life_span_years` is not decoration — it is the honest half of the headline claim.**
+  Measured (`stddev_samp`, so the 6 rows are directly plottable as ±1σ error bars on the same chart
+  the mean line already feeds — no extra mart, that's the payoff of one-mart-per-grain):
+
+  | size_class | n | with_life_span | mean | **std** | range |
+  |---|---|---|---|---|---|
+  | toy | 40 | **29** | 13.3 | **0.86** | 11.0–15.0 |
+  | small | 104 | **86** | 13.2 | **0.68** | 11.0–15.0 |
+  | medium | 220 | 212 | 13.0 | **0.77** | 9.0–15.0 |
+  | large | 203 | 200 | 12.2 | **1.03** | 8.5–14.5 |
+  | giant | 58 | 58 | 10.6 | **1.54** | 6.5–13.5 |
+
+  Two things the mean alone hides, both worth saying in the narrative: **the spread grows with size**
+  (0.68 → 1.54 — giant breeds are shorter-lived *and* less predictable), and the toy→giant gap
+  (2.7 yr) is **under 2σ of the giant band**, so the distributions overlap heavily. The trend is real
+  in the mean and weak per-dog. Without the std, the chart oversells −0.671 exactly the way §0 says
+  the bar chart would.
 - **`mart_size_vs_lifespan`** — grain: **breed** (one row per breed, ready to scatter).
   `breed_id, breed_name, size_class, weight_mid_kg, life_span_mid_years`.
   **No `height_mid_cm`** — its only consumers were the height-vs-weight view and the scaling fit,
@@ -303,6 +370,23 @@ on `size_class` is drift waiting to happen.
   implied — the same rule `mart_size_class_summary` follows.
   **Top-N is presentation, not gold:** the mart holds every (class, tag) pair; the dashboard takes
   the top 3–5. Bake the cut into the model and you can't change it without a rebuild.
+- **`mart_data_coverage`** — grain: **one row**. `total_breeds, breeds_with_weight,
+  breeds_with_life_span, breeds_with_both, breeds_with_temperament, breeds_plotted_scatter`.
+  **What every chart silently drops, stated as a fact the dashboard prints.** Measured today:
+
+  | | breeds |
+  |---|---|
+  | total (post-dedupe) | **627** |
+  | no weight | 2 → `size_class = 'unknown'` |
+  | no life span | **40** → excluded from every life-span mean |
+  | **scatter needs both → dropped** | **42 → 585 plotted** |
+  | no temperament | 0 → the bridge covers all 627 (3,539 tag rows) |
+
+  **Why this is not cosmetic:** the missing life spans are *not evenly spread*. **Toy has 29 of 40**
+  (27.5% missing); **giant has 59 of 59** (0%). So the toy bar at 13.3 yr rests on 72% of toy breeds
+  and the giant bar on 100% — a real bias in the headline chart that no reader could detect. A
+  dashboard that says "627 breeds" while plotting 585 is quietly lying. Reading `n_breeds = 585` off
+  `mart_metric_correlation` gives the same number, which is a good consistency check on both.
 - (optional) `mart_top_temperaments`: tag → breed count, from the bridge. Largely subsumed by
   `mart_size_class_temperaments` — only build it if an overall (non-size-split) tag ranking is
   wanted.
@@ -319,18 +403,25 @@ Each row uses every breed where *its own* two metrics are non-null — not only 
 This is why `n_breeds` is a column: **a correlation without its population is not a fact.** Pairwise
 vs listwise is not cosmetic — it moves the numbers:
 
-| pair | pairwise (SPEC, n) | listwise n=586 |
+| pair | pairwise (SPEC, n) | listwise |
 |---|---|---|
-| weight ↔ life span | **−0.671** (586) | −0.671 |
-| height ↔ life span | **−0.503** (586) | −0.503 |
-| height ↔ weight | **0.860** (626) | 0.851 |
+| weight ↔ life span | **−0.670** (585) | −0.670 |
+| height ↔ life span | **−0.502** (585) | −0.502 |
+| height ↔ weight | **0.860** (625) | 0.851 |
 
 ## Dashboard questions (CONFIRMED in M0.5 — answering 3 of the 4)
 1. **How are breeds distributed across weight classes?** → count bars from
    `mart_size_class_summary`.
-2. **Is there a relationship between size and life span?** → mean-life-span line from
-   `mart_size_class_summary` + per-breed scatter from `mart_size_vs_lifespan`, with the
-   correlations from `mart_metric_correlation` as the stated evidence.
+2. **Is there a relationship between size and life span?** → mean-life-span line **with ±1σ error
+   bars** (`stddev_life_span_years`, same 6 rows) from `mart_size_class_summary` + per-breed scatter
+   from `mart_size_vs_lifespan`, with the correlations from `mart_metric_correlation` as the stated
+   evidence. The std is **required, not optional**: without it the chart claims a precision the data
+   doesn't have (giant σ=1.54 vs a 2.7 yr toy→giant gap — the bands overlap).
+
+**Every chart states its population, from `mart_data_coverage`** — "585 of 627 breeds; 42 excluded
+for missing weight or life span". Never print 627 next to a chart drawn from 585. Note especially
+that life-span coverage is **uneven by class** (toy 29/40 vs giant 58/58), so the per-class
+denominator (`breeds_with_life_span`) belongs next to the bars too.
 3. **Which temperaments are characteristic of each size class?** → top 3–5 tags per class by
    `pct_of_class` from `mart_size_class_temperaments`, as a horizontal bar or small table:
    `Giant: calm 72% · protective 61% · loyal 55%` / `Toy: alert 68% · playful 63%`.

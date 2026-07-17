@@ -58,6 +58,11 @@ Persistent context for Claude Code. Read this every session. The detailed schema
 - **Two dbt targets, same code (scored):** `dev` → `dogs_dev.duckdb` (iterating), `prod` →
   `dogs.duckdb` (CI + the local demo build the dashboard reads). Only the path differs — never the
   SQL. `ingest.py --db` must point at the same file as the target. Schema in SPEC.md.
+- **Always run dbt from `dbt/`.** It auto-finds `./profiles.yml` there; from the repo root it falls
+  back to `~/.dbt/profiles.yml` and fails with a misleading "not found" that looks like a broken
+  install. **M5's workflow needs `working-directory: dbt`** on every dbt step. Env is the project
+  **`.venv`** (`.venv/bin/dbt`) — NOT miniconda base: dbt needs protobuf>=6 and the base TensorFlow
+  stack needs <4, so they cannot coexist (learned the hard way — DAY_REPORT).
 
 ## Non-negotiable rules
 - **Secrets never in the repo.** `/v1/breeds` **requires an API key** — unauthenticated calls return
@@ -86,8 +91,26 @@ Persistent context for Claude Code. Read this every session. The detailed schema
 
 ## Tests are the contract (declare before/with the models — this is the TDD loop)
 Minimum per SPEC.md: `breed_id` unique+not_null; `size_class` accepted_values (incl. 'unknown');
-custom weight_min<=max; custom lifespan_min<=max; custom no-'unknown'-sentinel; unit-ratio
-plausible; bridge relationships. Iterate models against `dbt build` / `dbt test` until green.
+custom weight_min<=max; custom lifespan_min<=max; **`assert_metric_parsed`** (error — a raw string
+that yielded no number; **supersedes the old no-'unknown'-sentinel test**, which only caught one
+literal); **`assert_metric_shape_known`** (warn — the notation-change flag); unit-ratio plausible
+(**error**, median in **[2.095, 2.315]** weight / **[2.413, 2.667]** height — ±5%); bridge
+relationships + unique(breed_id, temperament). Iterate against `dbt build` / `dbt test` until green.
+- **The parser's ceiling, stated:** extract-all-numbers is shape-blind, so unit *suffixes* are free
+  (`"12 years - 13 years"` → 12/13, `"3-5kg"` → 3/5 — verified). But a regex sees numbers, not
+  meaning: `"3.5 kg (7.7 lb)"` → 3.5/7.7 (mixed units) and `"2 years 6 months"` → 2/6 are **silently
+  wrong** and pass every invariant. Only `assert_metric_shape_known` catches that class.
+
+## Honesty in the numbers (non-negotiable — DECISIONS.md §0)
+- **`stddev_life_span_years` ships with the mean**, plotted as ±1σ bars off the same 6-row mart.
+  σ grows 0.68 (small) → **1.54 (giant)**, and the toy→giant gap (2.7 yr) is **under 2σ** — the trend
+  is real in the mean, weak per-dog. A bare mean line oversells it, which is the same sin as the
+  dual axis.
+- **Every chart prints its population** from `mart_data_coverage`: **585 of 627 plotted, 42
+  excluded**. Coverage is **uneven by class** — toy **29/40** with a life span vs giant **58/58** —
+  so `breeds_with_life_span` sits beside the bars. Never print 627 next to a chart drawn from 585.
+- **628 is raw; `dim_breeds` is 627** (the Caucasian dupe). Never mix them: the row-count guard is
+  627 ±5% at gold, 628 at raw.
 
 ## Dashboard questions — CONFIRMED in M0.5 (answering 3 of 4)
 (1) **breeds per weight class**, (2) **size vs life span**, (3) **characteristic temperaments per

@@ -24,11 +24,12 @@ I can explain is stronger evidence of thinking than a choice that was never test
 ### Exploration paid off — and the case's questions turned out to be real
 
 Profiling gave structure (628 rows, 17 fields, null rates, format variants); it could not tell me
-which questions had *interesting answers*. The throwaway Streamlit explorer did, and it confirmed
-the case study's suggested questions were worth answering rather than busywork:
+which questions had *interesting answers*. I decided to quickly explore the data with a dashboard. 
+The throwaway Streamlit explorer did, and it confirmed the case study's suggested questions were 
+worth answering rather than busywork:
 
 - **Size vs life span is a genuine signal** — weight↔life span **−0.671**, and it survives
-  aggregation: **13.3 yr (toy) → 10.6 yr (giant)**. Not a fishing expedition.
+  aggregation: **13.3 yr (toy) → 10.6 yr (giant)**.
 - **"Size" means weight, not height.** Height↔life is only −0.503, and height↔weight is 0.860 — so
   height adds almost nothing once weight is in. That's now a *tested mart* (`mart_metric_correlation`),
   not an assertion in a slide.
@@ -43,8 +44,9 @@ in SPEC (`>= min_kg AND < max_kg`).
 
 **Deliberately left aside** (specified, not built — reasoning in DECISIONS.md §0/§3):
 
-- **Temperament-pair lift by size band.** Interesting, but it answers a question nobody asked, and
-  the honest version needs leave-one-out lift + 7 tests to not lie. Specified in §3 so the thinking
+- **Temperament-pair lift by size band.** Interesting and can be found in exploration/, 
+but it answers a question nobody asked, and the honest version needs leave-one-out lift + 
+7 tests to not lie. Specified in §3 so the thinking
   survives; not built.
 - **Male/female as separate columns.** A product feature the breed-level questions don't need.
 - **Height as the size axis.** The correlation mart is the evidence for dropping it.
@@ -57,7 +59,8 @@ track long-term change. It survived exactly as long as it took to ask *where doe
 GitHub Actions gives every run a fresh VM: `dogs.duckdb` does not survive it. To keep the history I'd
 have had to bolt persistence (MotherDuck, S3, an Actions cache) onto the pipeline **purely to protect
 a history I couldn't name a use for** — on a near-static source, storing 628 identical rows a day to
-record that nothing changed.
+record that nothing changed. Of course it becomes interesting to keep an history on the long term 
+range to keep track of any change and see how evolve data distributions if new breeds are added. 
 
 **Resolution: the pipeline is stateless. The API is the source of truth.** Every run re-fetches and
 rebuilds; a fresh empty warehouse is a *supported starting point*, not a problem to engineer around.
