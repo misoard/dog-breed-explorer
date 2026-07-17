@@ -1,0 +1,63 @@
+version: 2
+
+# THE CONTRACT for stg_breeds — written before the model exists.
+# Generic tests live here; the custom ones are SELECTs in dbt/tests/.
+
+models:
+  - name: stg_breeds
+    description: >
+      Silver. One row per breed, from the LATEST run_date only, parsed and typed, with the
+      duplicate breed removed. Faithful to the source — no opinions: no size_class, no
+      midpoints, no business rules. Those are gold's job (dim_breeds).
+
+    columns:
+      - name: breed_id
+        description: CAST(payload->>'id' AS INTEGER). The API sends id as a string.
+        data_tests:
+          - unique
+          - not_null
+
+      - name: breed_name
+        description: >
+          Trimmed name. Unique AFTER the dedupe — and this test is the whole reason the
+          dedupe is testable.
+        data_tests:
+          # THE load-bearing test of this model. `unique(breed_id)` CANNOT catch the
+          # Caucasian Shepherd duplicate: it sits on ids 70 and 269, which are perfectly
+          # unique ids. Only name-uniqueness sees it. Expect 2 rows RED before dedupe.
+          - unique
+          - not_null
+
+      # --- the parser's inputs, kept so the parse is traceable and testable -----------
+      # weight_raw / height_raw / life_span_raw are the strings the parser was HANDED:
+      # trimmed + lowercased, sentinels already nulled. Not in SPEC's original column
+      # list; added because assert_metric_parsed needs to ask "you were given a string —
+      # where's the number?" without re-deriving what a sentinel is.
+      - name: weight_raw
+        description: weight.metric after 'unknown' -> NULL. The parser's actual input.
+      - name: height_raw
+        description: height.metric after 'unknown' -> NULL.
+      - name: life_span_raw
+        description: life_span after empty -> NULL.
+
+      # --- parsed measures. Nullable BY DESIGN — 2 breeds have no weight, 40 no life span.
+      - name: weight_min_kg
+        description: 'Overall MIN across sexes: "Male: 50-77; Female: 41-64" -> 41.'
+      - name: weight_max_kg
+        description: 'Overall MAX across sexes -> 77. The whole-breed envelope, not a per-sex range.'
+      - name: height_min_cm
+      - name: height_max_cm
+      - name: life_span_min_years
+      - name: life_span_max_years
+
+      - name: n_missing_fields
+        description: >
+          Count of empty source fields. Exists ONLY as the dedupe tiebreak — and it does
+          not decide the real case: ids 70 and 269 both have exactly 2, so breed_id breaks
+          the tie and 70 wins. Kept because a future duplicate may not tie.
+        data_tests:
+          - not_null
+
+      - name: loaded_at
+        data_tests:
+          - not_null

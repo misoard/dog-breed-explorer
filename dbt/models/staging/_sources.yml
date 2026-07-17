@@ -1,0 +1,56 @@
+version: 2
+
+# The boundary between E+L and T. Everything below this line is dbt's; raw.breeds is
+# ingest.py's. Declaring it as a `source` (not a `ref`) is how dbt knows it must not
+# try to build it — and it's what makes `{{ source('raw', 'breeds') }}` resolve to
+# raw.breeds while still appearing in the lineage graph as the DAG's root.
+
+sources:
+  - name: raw
+    description: >
+      Bronze layer. Written by ingestion/ingest.py, never by dbt. One 628-row partition
+      per run_date; the payload is verbatim JSON exactly as TheDogAPI returned it, so if
+      the parser turns out to be wrong we rebuild from here without re-fetching.
+    schema: raw
+
+    tables:
+      - name: breeds
+        description: >
+          One row per breed per run_date. NOTE: raw accumulates partitions locally, so
+          stg_breeds MUST filter to the latest run_date or every downstream count doubles
+          on day two. In CI (stateless) exactly one partition ever exists.
+
+        # Freshness uses the loaded_at column ingestion writes. A daily cron means more
+        # than ~36h without a run is a missed run. Surfaced by `dbt source freshness`
+        # (a separate command from `dbt build`) — warn only: a stale local file is a
+        # signal for me, not a reason to fail a build.
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 36, period: hour}
+
+        columns:
+          - name: breed_id
+            description: >
+              INTEGER key lifted out of the payload by ingestion — a landing key, not an
+              interpretation. The API sends id as a STRING ("id":"1"), so the cast to
+              INTEGER is a staging decision, made visible by keeping the payload verbatim.
+              Unique per run_date, NOT globally (that's what the partition means).
+            data_tests:
+              - not_null
+
+          - name: payload
+            description: The breed as JSON, untouched. dbt unpacks it; ingestion never did.
+            data_tests:
+              - not_null
+
+          - name: run_date
+            description: >
+              The partition key. Ingestion replaces this day's partition atomically
+              (DELETE+INSERT in one transaction), which is what makes a re-run idempotent.
+            data_tests:
+              - not_null
+
+          - name: loaded_at
+            description: When this run wrote the row. Drives source freshness above.
+            data_tests:
+              - not_null

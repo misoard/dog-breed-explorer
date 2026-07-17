@@ -1,0 +1,48 @@
+name: 'dog_breed_explorer'
+version: '1.0.0'
+config-version: 2
+
+# Which profile in profiles.yml to use. Same name, two targets (dev/prod).
+profile: 'dog_breed_explorer'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# A test whose ref() doesn't resolve is DROPPED by dbt with only a warning — it doesn't run,
+# the build stays green, and you believe you're covered when you aren't. A test that silently
+# doesn't run is worse than no test. This escalates that one event to a hard error.
+#
+# Deliberately scoped to NodeNotFoundOrDisabled rather than blanket --warn-error: blanket
+# escalation would also turn our severity:warn TESTS (assert_metric_shape_known, the three
+# distributional guards) into build failures, destroying the warn/error split on purpose.
+# Verified: this escalates a typo'd ref to exit 2, and leaves warn-severity tests at exit 0.
+flags:
+  warn_error_options:
+    error:
+      - NodeNotFoundOrDisabled
+
+# Materialization + schema are set HERE, per layer — never per model. A model that
+# has to know where it lives is a model that can't be moved. See SPEC.md
+# "Materialization & schemas".
+#
+#   staging = view   : a parse/type pass with exactly one consumer (marts). Costs
+#                      nothing to rebuild and can never be stale.
+#   marts   = table  : the dashboard reads these repeatedly. Build once, so the
+#                      read path never re-executes the parser.
+#
+# dbt CONCATENATES a custom schema onto the target schema, so `staging` -> `main_staging`.
+# Writing `main_staging` here would give `main_main_staging`.
+models:
+  dog_breed_explorer:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts

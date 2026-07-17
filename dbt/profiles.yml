@@ -1,0 +1,32 @@
+# Two targets, one set of models. The ONLY difference between dev and prod is which
+# DuckDB file dbt writes to — never the SQL. If a model ever needs to know its target,
+# that's a smell. (SPEC.md "dbt targets"; the brief scores this explicitly.)
+#
+# Committed on purpose: this file holds paths, not secrets. DOG_API_KEY is the only
+# secret in the project and it never appears here.
+#
+#   dev  -> dogs_dev.duckdb   scratch, mine, delete any time
+#   prod -> dogs.duckdb       CI's build (discarded with the VM) AND the local build
+#                             the dashboard reads. "prod" = production-shaped, not "cloud".
+#
+# Paths are relative to the dbt working directory (dbt/), so ../ is the repo root.
+#
+# DBT_DUCKDB_PATH exists for the one genuinely fragile seam in this design: ingest.py
+# and dbt are two separate programs that must agree on a file path. CI sets that env var
+# once and both steps read it, instead of repeating a literal path in two workflow steps.
+
+dog_breed_explorer:
+  # dev is the default so a bare `dbt build` cannot touch the serving copy by accident.
+  # Reaching prod must be a deliberate act: `--target prod`.
+  target: dev
+
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', '../dogs_dev.duckdb') }}"
+      threads: 4
+
+    prod:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', '../dogs.duckdb') }}"
+      threads: 4
