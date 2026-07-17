@@ -20,10 +20,20 @@ sources:
           stg_breeds MUST filter to the latest run_date or every downstream count doubles
           on day two. In CI (stateless) exactly one partition ever exists.
 
-        # Freshness uses the loaded_at column ingestion writes. A daily cron means more
-        # than ~36h without a run is a missed run. Surfaced by `dbt source freshness`
-        # (a separate command from `dbt build`) — warn only: a stale local file is a
-        # signal for me, not a reason to fail a build.
+        # THE SOURCE BOUNDARY IS THE RISKIEST EDGE IN THE PROJECT — it is the only place
+        # something outside my control can change. So it keeps THREE guards, even though the
+        # per-column not_null tests were cut in M4 as structurally unfireable (the raw.breeds
+        # DDL declares every column NOT NULL, so a null INSERT is rejected by DuckDB before
+        # dbt ever runs — verified). Testing a database constraint with dbt is decoration.
+        #
+        # What actually guards this edge:
+        #   1. freshness (below)                — warn @36h: a daily cron means >36h is a missed run
+        #   2. assert_unit_ratio_plausible      — error: reads THIS source, parses independently
+        #   3. assert_no_breed_lost             — error: reconciles this source's row count to gold
+        #   ...plus ingest.py's validate(), which never lets a bad payload land in the first place.
+        #
+        # Freshness is surfaced by `dbt source freshness`, a separate command from `dbt build`
+        # — warn only: a stale local file is a signal for me, not a reason to fail a build.
         loaded_at_field: loaded_at
         freshness:
           warn_after: {count: 36, period: hour}
@@ -35,22 +45,15 @@ sources:
               interpretation. The API sends id as a STRING ("id":"1"), so the cast to
               INTEGER is a staging decision, made visible by keeping the payload verbatim.
               Unique per run_date, NOT globally (that's what the partition means).
-            data_tests:
-              - not_null
+              NOT NULL is enforced by the DDL — a dbt test here could never fire.
 
           - name: payload
             description: The breed as JSON, untouched. dbt unpacks it; ingestion never did.
-            data_tests:
-              - not_null
 
           - name: run_date
             description: >
               The partition key. Ingestion replaces this day's partition atomically
               (DELETE+INSERT in one transaction), which is what makes a re-run idempotent.
-            data_tests:
-              - not_null
 
           - name: loaded_at
             description: When this run wrote the row. Drives source freshness above.
-            data_tests:
-              - not_null

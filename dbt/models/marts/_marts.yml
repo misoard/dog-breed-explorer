@@ -51,8 +51,7 @@ models:
         description: max - min. Null when life_span is null (40 breeds).
 
       - name: loaded_at
-        data_tests:
-          - not_null
+        description: From raw via stg_breeds, NOT NULL at the DDL. (not_null cut in M4 — unfireable.)
 
   # --------------------------------------------------------------------------------------
   # CONTRACTED from here down. The rule: contract where dbt's knowledge ENDS.
@@ -72,16 +71,17 @@ models:
       - name: breed_id
         data_type: integer
         data_tests:
-          - not_null
+          # REGRESSION GUARD. Guards against: dim_breeds gaining a WHERE (e.g. "exclude
+          # breeds with no weight"). The bridge and dim reach stg_breeds by DIFFERENT paths,
+          # so a filter on one orphans the other — unlike the silver equivalent, which was
+          # cut as unfireable. not_null cut: inherited from a non-null parent column.
           - relationships: {to: ref('dim_breeds'), field: breed_id}
       - name: temperament
         data_type: varchar
-        description: Lowercased + trimmed. GROUP BY this.
-        data_tests: [not_null]
+        description: Lowercased + trimmed. GROUP BY this. (not_null cut — `lower(tag)`, unfireable.)
       - name: temperament_display
         data_type: varchar
         description: Sentence-cased. Presentation only — never group on this.
-        data_tests: [not_null]
 
   - name: mart_size_class_summary
     description: "Grain: size_class (6 rows). Count bars + mean-life-span line + the numbers table."
@@ -90,20 +90,21 @@ models:
     columns:
       - name: size_class
         data_type: varchar
-        data_tests:
-          - not_null
-          - unique
-          - accepted_values: {values: ['toy','small','medium','large','giant','unknown']}
+        description: >
+          The model IS `group by size_class`, so unique/not_null/accepted_values were all cut
+          in M4 as unfireable — GROUP BY guarantees uniqueness, and the values come straight
+          from dim_breeds, whose accepted_values test already guards the domain at the one
+          place it's derived.
       - name: breed_count
         data_type: bigint
-        description: Every breed in the class — the count bars' denominator.
-        data_tests: [not_null]
+        description: >
+          Every breed in the class — the count bars' denominator.
+          (not_null cut: the column is `count(*)`, which never returns NULL.)
       - name: breeds_with_life_span
         data_type: bigint
         description: >
           Only those WITH a life span. Differs from breed_count and NOT evenly — toy 29/40,
-          giant 58/58. Both denominators exposed on purpose.
-        data_tests: [not_null]
+          giant 58/58. Both denominators exposed on purpose. (not_null cut — `count(x)`.)
       - name: mean_life_span_years
         data_type: double
       - name: median_life_span_years
@@ -127,15 +128,16 @@ models:
     columns:
       - name: breed_id
         data_type: integer
-        data_tests: [not_null, unique]
+        data_tests:
+          # REGRESSION GUARD. Guards against: this mart gaining a JOIN (to pull in a column
+          # from the bridge, say) and fanning out — the scatter would silently plot a breed
+          # twice. not_null cut: inherited from dim_breeds' tested PK.
+          - unique
       - name: breed_name
         data_type: varchar
-        data_tests: [not_null]
       - name: size_class
         data_type: varchar
-        data_tests:
-          - not_null
-          - accepted_values: {values: ['toy','small','medium','large','giant','unknown']}
+        description: Read straight from dim_breeds, whose accepted_values guards the domain.
       - name: weight_mid_kg
         data_type: double
       - name: life_span_mid_years
@@ -148,17 +150,21 @@ models:
     columns:
       - name: metric_a
         data_type: varchar
-        data_tests: [not_null]
+        description: A string literal in the SQL. (not_null cut — unfireable.)
       - name: metric_b
         data_type: varchar
-        data_tests: [not_null]
       - name: correlation
         data_type: double
+        description: >
+          LOAD-BEARING not_null, and the only one on this model that can fire: DuckDB's
+          corr() returns NULL when n < 2. If a metric pair ever collapsed to under two
+          breeds, the dashboard would render a blank correlation rather than an error.
         data_tests: [not_null]
       - name: n_breeds
         data_type: bigint
-        description: PAIRWISE population. A correlation without its population is not a fact.
-        data_tests: [not_null]
+        description: >
+          PAIRWISE population. A correlation without its population is not a fact.
+          (not_null cut — `count(*)`.)
 
   - name: mart_size_class_temperaments
     description: "Grain: (size_class, temperament). Top tags per class, as % OF THE CLASS."
@@ -167,23 +173,22 @@ models:
     columns:
       - name: size_class
         data_type: varchar
-        data_tests:
-          - not_null
-          - accepted_values: {values: ['toy','small','medium','large','giant','unknown']}
+        description: From dim_breeds via the join; its domain is guarded there.
       - name: temperament
         data_type: varchar
-        data_tests: [not_null]
+        description: From the bridge, where the column cannot be null.
       - name: breed_count
         data_type: bigint
-        data_tests: [not_null]
       - name: breeds_in_class
         data_type: bigint
         description: The denominator, kept visible — a percentage you can't check isn't a fact.
-        data_tests: [not_null]
       - name: pct_of_class
         data_type: double
-        description: breed_count / breeds_in_class. Arithmetic, NOT lift — no baseline, no inference.
-        data_tests: [not_null]
+        description: >
+          breed_count / breeds_in_class. Arithmetic, NOT lift — no baseline, no inference.
+          Guarded by assert_pct_of_class_sane (LOAD-BEARING): breed_count <= breeds_in_class
+          is arithmetically impossible unless the bridge join fans out. All the not_null tests
+          on this model were cut — every column is a count(*) or inherited from a tested parent.
 
   - name: mart_data_coverage
     description: "Grain: one row. What every chart drops — printed beside every chart."
@@ -192,7 +197,7 @@ models:
     columns:
       - name: total_breeds
         data_type: bigint
-        data_tests: [not_null]
+        description: "count(*) — not_null cut in M4, unfireable."
       - name: breeds_with_weight
         data_type: bigint
       - name: breeds_with_life_span
