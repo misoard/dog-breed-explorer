@@ -35,3 +35,47 @@ seeds:
         description: EXCLUSIVE upper bound. 999 on `giant` is a sentinel for "no ceiling".
         data_tests:
           - not_null
+
+  - name: dashboard_temperament_tags
+    description: >
+      CONFIG, not data: the curated set + order of temperament tags the dashboard's
+      temperament HEATMAP (DASHBOARD.md §D) plots. Same playbook as size_class_bands —
+      a hand-chosen constant that steers a chart, lifted out of an app literal into a
+      seed so it's reviewable in the repo and read by the app instead of hardcoded.
+
+      Why a SEED and not baked into mart_size_class_temperaments: the mart holds EVERY
+      (class, tag) pair on purpose (its header: "TOP-N IS NOT HERE… bake the cut in and
+      you can't change it without a rebuild"). The curated cut is presentation and stays
+      in the read layer; the seed carries only the LIST + ORDER, never pct_of_class. The
+      app filters the untouched mart to these tags — "selecting rows already in a mart",
+      which DASHBOARD.md §0 permits — and sorts the heatmap's y-axis by sort_order.
+
+      The five were chosen by cross-class spread of pct_of_class (playful/alert at the
+      toy end, energetic in the middle, protective/calm at the giant end) so each class
+      reads as a distinct column and the whole grid as a diagonal gradient. Reasoning in
+      DECISIONS.md §0; the near-universal tags (intelligent, loyal) are set aside on
+      purpose.
+
+    columns:
+      - name: temperament
+        description: >
+          Lowercased + trimmed tag, must match breed_temperaments.temperament EXACTLY
+          (the bridge is lowercased+trimmed, so 'Calm' would match nothing and silently
+          empty a heatmap row).
+        data_tests:
+          # A curated INPUT guarded like size_class_bands — NOT the DECISIONS.md §3
+          # "wallpaper" anti-pattern. relationships fires if a seed tag is a typo, a
+          # casing/normalization mismatch, or drifts out of the vocabulary — each of
+          # which blanks a heatmap row. WARN, not error: editing the seed IS the correct
+          # response, and M5's annotate_warns.py surfaces it without failing the build.
+          - unique
+          - relationships:
+              to: ref('breed_temperaments')
+              field: temperament
+              config:
+                severity: warn
+      - name: sort_order
+        description: Heatmap y-axis order (1 = top). playful→calm gives the diagonal.
+        data_tests:
+          - not_null
+          - unique

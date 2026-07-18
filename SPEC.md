@@ -31,6 +31,7 @@ Business logic lives in dbt gold; the dashboard stays thin.
 | gold | `mart_size_class_temperaments` | dbt | grain: (size_class, temperament) — count + % within class |
 | gold | `mart_data_coverage` | dbt | one row — what each chart drops (627 total, 585 plotted) |
 | seed | `size_class_bands` | dbt seed | the ONLY home of the bucket boundaries |
+| seed | `dashboard_temperament_tags` | dbt seed | **config for the dashboard heatmap** (M6): curated tag list + `sort_order`. NOT a data grid — carries no `pct_of_class`; the cut stays in the read layer. `mart_size_class_temperaments` is **unchanged** |
 
 ## Materialization & schemas
 
@@ -427,6 +428,7 @@ guard reporting green about the nine numbers it watches. Three categories, and e
 | `unique(mart_size_vs_lifespan.breed_id)` | this mart gaining a JOIN (to pull a column from the bridge) and plotting a breed twice |
 | `relationships(breed_temperaments → dim_breeds)` | `dim_breeds` gaining a `WHERE` (e.g. "exclude breeds with no weight"), orphaning bridge rows. The bridge and dim reach `stg_breeds` by DIFFERENT paths — which is why the *silver* equivalent was cut and this one kept |
 | `unique`/`not_null` on `size_class_bands` | the seed is a **CSV** — a blank cell IS a null, a copy-paste IS a dup |
+| `relationships` on `dashboard_temperament_tags.temperament` → `breed_temperaments` (**warn**) + `unique` | the M6 heatmap's curated tag seed is a CSV: a typo, a casing mismatch (`'Calm'` ≠ lowercased bridge), or vocabulary drift silently empties a heatmap row. Guards a **curated input** like the bands cover-test — NOT §3 wallpaper; editing the seed IS the fix. Proven: green on 5 tags, `WARN 1` on injected `Calm` |
 | PK tests on `stg_breeds` / `dim_breeds` (`breed_id`, `breed_name`) | the grain itself. `stg_breeds.breed_id` is `cast(payload->>'id')` — a payload without an id yields NULL |
 | `accepted_values(dim_breeds.size_class)` | a 6th label appearing — from a seed edit or a CASE branch. Guarded **once**, where the value is derived; the marts copy it, so their duplicates were cut |
 
@@ -647,9 +649,12 @@ vs listwise is not cosmetic — it moves the numbers:
 for missing weight or life span". Never print 627 next to a chart drawn from 585. Note especially
 that life-span coverage is **uneven by class** (toy 29/40 vs giant 58/58), so the per-class
 denominator (`breeds_with_life_span`) belongs next to the bars too.
-3. **Which temperaments are characteristic of each size class?** → top 3–5 tags per class by
-   `pct_of_class` from `mart_size_class_temperaments`, as a horizontal bar or small table:
-   `Giant: calm 72% · protective 61% · loyal 55%` / `Toy: alert 68% · playful 63%`.
+3. **Which temperaments are characteristic of each size class?** → `pct_of_class` from
+   `mart_size_class_temperaments` (mart **unchanged**), rendered as a **heatmap** over a curated,
+   distinctive tag set (the near-universal `intelligent`/`loyal` set aside). **Chart + tag curation
+   are canonical in DASHBOARD.md §D** (heatmap over radar: a radar's "rotation" is an axis-order
+   styling artifact — the same reason the dual axis is banned); the tag list lives in the seed
+   `dashboard_temperament_tags`, not the app. Earlier "horizontal bar or small table" is superseded.
    Narrative: *"temperament varies systematically with size — giant breeds skew calm and protective,
    toy breeds alert and playful."* This is what puts **temperament** — one of the three fields the
    brief names — on the dashboard as a headline fact rather than only a bridge table nobody looks at.
