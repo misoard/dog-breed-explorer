@@ -16,4 +16,5 @@ dbt-duckdb~=1.10.1
 
 # M6 — dashboard
 streamlit~=1.40
+altair~=6.2            # charting; pinned to the minor built + tested against (bars, line+-1sigma, scatter, heatmap)
 pandas~=2.2

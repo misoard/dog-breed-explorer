@@ -46,12 +46,16 @@ never triggers the pipeline; it reads whatever gold currently holds.
 
 | # | section | single mart | what the app does to it |
 |---|---|---|---|
-| A | coverage strip | `mart_data_coverage` | read 1 row, print headline numbers |
-| B | breeds per weight class | `mart_size_class_summary` | 5 real classes, bar = `breed_count` |
-| C1 | size vs life span (line) | `mart_size_class_summary` | mean line + `stddev_life_span_years` as ±1σ |
-| C2 | size vs life span (scatter) | `mart_size_vs_lifespan` | 585 points (both non-null), colour by `size_class` |
-| C3 | why weight, not height (inside C) | `mart_metric_correlation` | 3 rows + explanation — justifies the weight x-axis above |
-| D | temperament heatmap | `mart_size_class_temperaments` (unchanged) | filter to the curated tags (from seed `dashboard_temperament_tags`) × 5 classes, colour = `pct_of_class` |
+| A | coverage strip | `mart_data_coverage` | read 1 row, print the per-field strip |
+| B | breeds per weight class | `mart_size_class_summary` + `size_class_bands` seed | 5 real classes, bar = `breed_count`; each x tick shows the class's **kg range** (from the seed) |
+| C2 | *every breed*: weight vs life span (scatter) | `mart_size_vs_lifespan` | 585 points (both non-null), colour by `size_class` (**distinct** palette); y zoomed to data ±10% |
+| — | longest-lived top-5 (below the scatter) | `mart_size_vs_lifespan` | filter/sort of the *same* mart; shows each breed's **published range** (min–max) |
+| C1 | mean life span ± 1σ, per class | `mart_size_class_summary` | mean line + `stddev_life_span_years`; y zoomed ±10%, band-aware so the σ bars aren't clipped |
+| C3 | why weight, not height (closes C) | `mart_metric_correlation` | 3 rows + explanation — justifies the weight x-axis |
+| D | temperament heatmap | `mart_size_class_temperaments` (unchanged) | curated tags (seed `dashboard_temperament_tags`) × 5 classes, colour = `pct_of_class` |
+
+**Order within section C is scatter → mean line → correlation** (raw breeds first, then the summary,
+then the axis justification), decided in M6 — not the line-first order this spec was first drafted in.
 
 `dim_breeds` and `breed_temperaments` are **not** read by the dashboard — `dim_breeds` is
 DAG-internal; `breed_temperaments` is the brief's *queryable* deliverable for a human with SQL, not
@@ -67,26 +71,29 @@ a panel.
 │  627 breeds · weight 625 · life span 587 · temperament 626     │  ← A: coverage strip (per-FIELD;
 │  each chart below states the subset it actually uses           │    no single global "excluded")
 ├──────────────────────────────────────────────────────────────┤
-│  HOW BIG ARE DOG BREEDS?                                       │
-│  ▁▃▇▆▂   count bars by weight class                            │  ← B: distribution
-│  toy 40 · small 104 · medium 220 · large 203 · giant 58        │
+│  HOW ARE BREEDS DISTRIBUTED ACROSS WEIGHT CLASSES?            │
+│  ▁▃▇▆▂   count bars, blue ordinal ramp                         │  ← B: distribution
+│  toy      small    medium   large    giant                     │    each tick: class + its kg range
+│  0–5 kg   5–12     12–25    25–45    ≥45 kg                     │    (from the size_class_bands seed)
 ├──────────────────────────────────────────────────────────────┤
-│  DOES SIZE COST LIFE SPAN?                                     │
-│  ("size" = weight — see the evidence at the foot of this      │
-│   section)                                                     │
-│  ┌ mean life span ± 1σ, per weight class ────────────┐         │  ← C1-line (shares x-axis with B)
-│  │  13.3 ─ 13.2 ─ 13.0 ─ 12.2 ─ 10.6   (bars = ±1σ)  │         │
+│  WHICH BREEDS LIVE LONGEST? DOES SIZE COST LIFE SPAN?         │
+│  ("size" = weight — evidence at the foot of this section)      │
+│  ┌ every breed: weight vs life span (585) ───────────┐         │  ← C2-scatter FIRST, DISTINCT
+│  │  · ·:·. · ·   toy·small·medium·large·giant colours │         │    colours; y zoomed to data ±10%
 │  └────────────────────────────────────────────────────┘        │
-│  n with life span: toy 29/40 · … · giant 58/58                 │  ← per-class denominators
-│  ┌ every breed: weight vs life span (585) ───────────┐         │  ← C2-scatter, coloured by class
-│  │   · ·:·. · ·  coloured toy→giant                   │         │
+│  585 of 627 plotted · 42 excluded                              │
+│  ┌ Longest predicted life span (top 5) ───────────────┐        │  ← top-5 table, same mart
+│  │  breed · size class · weight · published range 12–18│        │    (all five tie; alphabetical)
 │  └────────────────────────────────────────────────────┘        │
+│  ┌ mean life span ± 1σ, per weight class ────────────┐         │  ← C1-line; y zoomed ±10%,
+│  │  13.3 ─ 13.2 ─ 13.0 ─ 12.2 ─ 10.6   (bars = ±1σ)  │         │    band-aware (σ bars not clipped)
+│  └────────────────────────────────────────────────────┘        │
+│  n with life span: toy 29/40 · … · giant 58/58                 │
 │  → smaller breeds tend to live longer — real in the mean,      │
 │    weak per dog (giant σ 1.54 vs a 2.7 yr gap)                 │
 │  ── why weight, not height (the axis choice) ──────────        │  ← C3: correlation evidence,
-│  weight↔life −0.67 · height↔life −0.50 · height↔weight 0.86    │    inside this section because it
-│  weight predicts life span better; height is 0.86-coupled to   │    justifies the x-axis above
-│  weight, so it adds little once weight is in.                  │
+│  weight↔life −0.67 · height↔life −0.50 · height↔weight 0.86    │    closes the section because it
+│  weight predicts life span better; height 0.86-coupled.        │    justifies the x-axis above
 ├──────────────────────────────────────────────────────────────┤
 │  HOW DOES TEMPERAMENT SHIFT WITH SIZE?                         │
 │           toy  small med  large giant                          │  ← D: heatmap (mark_rect)
@@ -134,10 +141,10 @@ on 2026-07-17.
   | `breeds_plotted_scatter` | **585** | = `breeds_with_both` | **C2** |
   | `breeds_excluded_scatter` | **42** | 627 − 585 | **C2** headline |
 
-- **Chart:** a top metric strip stating coverage **per field, not one global "excluded"** —
-  **"627 breeds · weight 625 · life span 587 · temperament 626"** (`st.metric`/`st.caption`) — with
-  the line *"each chart below states the subset it uses."* The full 7-column table lives in a bottom
-  expander for the reader who wants the whole picture.
+- **Chart:** a single-line strip stating coverage **per field, not one global "excluded"** —
+  **"627 breeds · 625 with weight · 587 with life span · 626 with temperament"** (a `st.markdown`
+  line of bold numbers, with a `st.caption` *"each chart below states the subset it uses"*). Built as
+  a line, not `st.metric` cards, on request. The full 7-column table lives in a bottom expander.
 - **Why per-field, and why NO single "42 excluded" headline:** exclusion is **chart-specific**, so a
   lone global number misleads. Each chart drops a *different* set for a *different* reason, and that
   count lives **on the chart**, not in the strip:
@@ -164,12 +171,17 @@ on 2026-07-17.
 - **Claim it enables:** "every chart states what it drops."
 - **Honesty:** this panel *is* the honesty. It exists so no other panel silently prints 627.
 
-### B — Breeds per weight class (distribution)
-- **Shows:** how the 627 breeds distribute across the five size classes.
+### B — How are breeds distributed across weight classes? (distribution)
+- **Shows:** how the 627 breeds distribute across the five size classes, **with each band's kg range
+  under its name** so the reader knows what "medium" means.
 - **Mart:** `mart_size_class_summary`, filtered to the 5 real classes (drop `unknown`, n=2 — noted,
-  not plotted). Bar height = `breed_count`.
-- **Chart:** vertical **count bars**, x = `size_class` in fixed order toy → small → medium → large →
-  giant. This same x-axis is reused by C's line (the shared axis that replaces a dual-axis plot).
+  not plotted). Bar height = `breed_count`. The kg ranges come from the **`size_class_bands` seed**
+  (read from the CSV), so the printed range can't disagree with the model's banding.
+- **Chart:** vertical **count bars** on the **ordinal blue ramp** (light=toy → dark=giant — the bars
+  are a distribution, and a single sequential hue reads the size order well). x = `size_class` in
+  fixed order toy → small → medium → large → giant, each tick a two-line label (class over its range:
+  `0–5 kg` … `≥45 kg`). Both C1 and this chart use the same class order, but the scatter (C2) now sits
+  between them, so they are no longer physically stacked (the M6 reorder — see §2).
 - **Live values:** toy **40** · small **104** · medium **220** · large **203** · giant **58** (= 625
   banded; +2 `unknown` = 627).
 - **Claim:** "most breeds are medium or large; toy and giant are the tails."
@@ -178,15 +190,53 @@ on 2026-07-17.
   population from `mart_data_coverage.breeds_with_weight`: **"625 of 627 banded; 2 unknown-weight
   breeds excluded from the bars."**
 
-### C — Does size cost life span? (the finding — two charts, shared x-axis)
+### C — Which breeds live longest? Does size cost life span? (the finding + its evidence)
+
+The section reads **scatter → mean line → correlation**: the raw per-breed cloud first, then the
+per-class summary, then the axis justification. (Drafted line-first; **reordered in M6**.)
+
+**C2 — every breed: weight vs life span (scatter)**
+- **Shows:** the within-class spread the means hide, and where the longest-lived breeds sit.
+- **Mart:** `mart_size_vs_lifespan` (breed grain). Plot the **585** breeds with both `weight_mid_kg`
+  and `life_span_mid_years` non-null; the mart keeps the 42 null rows on purpose and the **app drops
+  them** (DECISIONS.md §0).
+- **Chart:** scatter, x = `weight_mid_kg`, y = `life_span_mid_years`.
+  - **Colour = `size_class` on a DISTINCT (categorical) palette** — blue / green / magenta / amber /
+    aqua, validated CVD-safe (`validate_palette.js`). This **overrides §4b's original "single
+    sequential blue ramp, never categorical"** for this one chart, deliberately: the x-axis already
+    encodes the size *ordering*, so colour is freed to encode *identity*, and five blue shades were
+    indistinguishable in the cloud. Points carry a dark outline so lighter fills read on white; the
+    **legend swatches have no outline** (`symbolStrokeWidth=0`, on request). The bars (B) keep the
+    ordinal blue ramp — two jobs, two encodings.
+  - **y zoomed to the data ±10%** (`[min(mid)·0.9, max(mid)·1.1]`) so the cloud uses the vertical
+    space. Axis bounds are rendering geometry, not a shown fact → within the thin rule.
+- **Claim:** "knowing a dog's size class tells you a lot; within any single band the relationship
+  nearly vanishes." (The specific within-band −0.1..−0.4 figure is **not** printed — it isn't in a
+  mart, so nothing hardcoded.)
+- **Honesty:** prints its population from `mart_data_coverage`: **"585 of 627 plotted · 42 excluded"**
+  (`breeds_plotted_scatter` / `breeds_excluded_scatter`) — the same 585 as C1's base and C3's `n`. The
+  colour legend doubles as the class key for the whole page.
+
+**Longest predicted life span — top-5 table (directly under the scatter)**
+- **Shows:** the longest-lived breeds, by name.
+- **Mart:** `mart_size_vs_lifespan` — a **filter/sort of the same mart** (top-N is the app's job), no
+  new read. Shows each breed's **published range** via `life_span_min_years` / `life_span_max_years`
+  (added to the mart in M6 as a pass-through from `dim_breeds`).
+- **The ordering call (honest, DECISIONS.md §0):** the five highest tie **identically** — all `12–18`
+  yr (min, max, *and* midpoint equal) — so **no life-span sort can rank them**. They are listed
+  **alphabetically**, not in a fake 1–5 order, and the range is shown so the tie is legible. What
+  differs between them is size, not lifespan. The caption branches: if a refresh breaks the tie it
+  switches to midpoint-ranked wording.
 
 **C1 — mean life span ± 1σ, per class**
 - **Shows:** the central trend and its spread.
 - **Mart:** `mart_size_class_summary` — `mean_life_span_years` (line/points) and
-  `stddev_life_span_years` (± error bars). Same 6-row mart as B, so the error bars come free — the
-  payoff of one-mart-per-grain.
-- **Chart:** a **line/point with ±1σ error bars**, x = the *same* `size_class` axis as B, stacked
-  directly below it. **Never** overlaid on B's counts as a second y-axis.
+  `stddev_life_span_years` (± error bars). low/high = mean∓σ is chart geometry drawn off the mart.
+- **Chart:** a **line/point with ±1σ error bars**, x = the *same* `size_class` order as B. **Never**
+  overlaid on B's counts as a second y-axis. **y zoomed to the data ±10%, bounded on the BAND**
+  (`[min(mean−σ)·0.9, max(mean+σ)·1.1]`) so the σ bars are never clipped. Zooming makes the decline
+  look steeper (the DECISIONS §0 zero-suppression worry) — the **required-visible ±1σ band is the
+  honesty guard**.
 - **Live values:**
 
   | class | n / with life span | mean | ±σ |
@@ -200,26 +250,9 @@ on 2026-07-17.
 - **Claim:** "mean life span falls 13.3 → 10.6 yr from toy to giant, and the fall is an *elbow* —
   flat toy→medium, then a drop at large/giant — not a smooth gradient. The spread grows with size."
 - **Honesty:** the **per-class denominators sit right here**, from
-  `mart_size_class_summary.breeds_with_life_span` (**not** the one-row coverage mart — that carries
-  only the whole-dataset 587): the toy mean rests on **29/40** breeds, the giant mean on **58/58**.
-  This is the uneven-by-class bias DECISIONS.md §0 insists on surfacing — the toy bar leans on 72% of
-  toy breeds, the giant bar on 100%. The ±1σ bars are what stop the mean overselling the trend (giant
-  σ 1.54 vs a 2.7 yr toy→giant gap → the distributions overlap heavily).
-
-**C2 — per-breed scatter**
-- **Shows:** the within-class spread the means hide.
-- **Mart:** `mart_size_vs_lifespan` (breed grain). Plot the **585** breeds with both
-  `weight_mid_kg` and `life_span_mid_years` non-null; the mart keeps the 42 null rows on purpose and
-  the **app drops them** (they are the dashboard's to drop — DECISIONS.md §0).
-- **Chart:** scatter, x = `weight_mid_kg`, y = `life_span_mid_years`, **coloured by `size_class`**
-  (confirmed M6). Colour ties the cloud back to B/C's classes and shows the bands overlapping. Manage
-  overplotting with opacity, not by hiding points.
-- **Claim:** "knowing a dog's size class tells you a lot; knowing one giant outweighs another tells
-  you little" — the overall −0.67 dissolves to ~−0.1..−0.4 within any single band.
-- **Honesty:** prints its population from `mart_data_coverage`: **"585 of 627 plotted · 42 excluded
-  for missing weight or life span"** (`breeds_plotted_scatter` / `breeds_excluded_scatter`). This 585
-  is the same 585 as C1's whole-dataset base and C3's `n_breeds` — the page's consistency anchor. The
-  colour legend doubles as the class key for the whole page.
+  `mart_size_class_summary.breeds_with_life_span`: the toy mean rests on **29/40** breeds, the giant
+  mean on **58/58**. This is the uneven-by-class bias DECISIONS.md §0 insists on surfacing. The ±1σ
+  bars stop the mean overselling the trend (giant σ 1.54 vs a 2.7 yr toy→giant gap → bands overlap).
 
 **C3 — why weight, not height (the evidence closing this section)**
 - **Shows:** why the two charts above use **weight** as the size axis — it belongs *here*, inside the
@@ -369,17 +402,25 @@ Decided M6: **Light theme · centered narrative width · native theming only (no
 
 ### 4b. Chart encodings
 
-- **Two colour encodings, both sequential, dark = more — never categorical hues.**
-  - **Scatter (C2): ordered `size_class`.** Size class is **ordinal** (toy < small < medium < large
-    < giant), so a **single sequential ramp** keys the points (light = smaller, dark = larger), not
-    five unrelated hues.
-  - **Heatmap (D): `pct_of_class`.** The cell colour is a **sequential quantitative ramp** on the
-    percentage (dark = higher). Different variable from the scatter, same principle — sequential,
-    dark = more.
-  Exact palettes are chosen at build under the **dataviz** skill — this spec fixes the *encodings*
-  (both sequential, dark = more), not the hex values.
-- **Shared x-axis order** toy → small → medium → large → giant, identical on B and C1 — that shared
-  axis is what makes the stacked pair legible and honest.
+- **Three colour encodings — sequential where the variable is a magnitude, categorical where it's an
+  identity.** *(This revises the spec's original "both sequential, never categorical" line — the
+  scatter changed at M6 after the blue ramp proved illegible in the cloud.)*
+  - **Bars (B): ordinal `size_class`, sequential blue ramp** (light = toy → dark = giant). On a bar
+    chart the order reads well and position already separates the classes, so one hue is right.
+  - **Heatmap (D): `pct_of_class`, sequential blue ramp** (dark = higher). A magnitude → one hue.
+  - **Scatter (C2): `size_class`, DISTINCT (categorical) palette** — blue/green/magenta/amber/aqua,
+    validated CVD-safe. Here colour is an **identity**, not a magnitude: the x-axis (weight) already
+    carries the size ordering, and five blue shades couldn't be told apart in a dense cloud. This is
+    the one place categorical hues are correct; validate any change with `validate_palette.js`.
+  Exact hues are chosen at build under the **dataviz** skill — this spec fixes the *encodings*, not
+  every hex.
+- **y-axes zoom to the data (±10%), not to zero.** C2 bounds on the plotted midpoints; C1 bounds on
+  the **±1σ band** so the error bars are never clipped. Axis bounds are rendering geometry (not a
+  shown fact), so this is within the thin rule — but zooming a trend off zero looks steeper, so C1
+  keeps the ±1σ band visible as the honesty guard (DECISIONS §0).
+- **Shared class order** toy → small → medium → large → giant on B, C1, D. B and C1 are no longer
+  physically adjacent (C2 sits between them after the M6 reorder), so the order is a consistency cue,
+  not a stacked-pair alignment.
 - **`unknown` (n=2) never appears as a plotted class.** It is real (2 breeds with no parsed weight)
   and lives in the coverage/footer, not on the size axis.
 - **Fonts/labels:** every axis labelled with units (kg, years); every chart carries its `n`. No
@@ -436,17 +477,25 @@ SAYS" section:
 
 ---
 
-## 7. Open — deferred to the build session (not blockers)
+## 7. Resolved at build (M6) — how the open choices were settled
 
-- **Build artifact: the seed `dashboard_temperament_tags` is already landed** (5 tags + `sort_order`,
-  with its WARN `relationships` test, proven green + proven to fire). The app reads it — via a small
-  `dbt seed`-built table or the CSV directly — to get the tag list + order; no hardcoded Python list.
-- **Heatmap: Altair `mark_rect`** on the mart's long rows (x=size_class, y=temperament by
-  `sort_order`, colour=`pct_of_class`). No pivot in the app.
-- **Sparse vs explicit-0 cells** — render the mart's sparse rows as empty cells, or pandas-reindex
-  onto the seed-tags × classes grid to draw explicit `0`. Presentation either way; decide at build,
-  note which.
-- **Exact sequential palettes + the `primaryColor` accent** — chosen at build under the dataviz
-  skill (§4 fixes the encodings and the light/centered/native shell; dataviz picks the hues).
-- **Build artifact: `.streamlit/config.toml`** with the `[theme]` block (`base = "light"`,
-  `primaryColor`, default sans font) — the versioned home of the app's look, per §4a.
+The app is built (`dashboard/app.py`, `.streamlit/config.toml`) and demoed live off the local prod
+`dogs.duckdb`. How each deferred choice landed:
+
+- **Temperament tag list:** the app reads the **seed CSV** directly (`dashboard_temperament_tags.csv`)
+  — robust with no prod re-seed dependency; it's the same file dbt loads.
+- **Heatmap:** Altair `mark_rect` on the mart's long rows. **Sparse cells → drawn as explicit 0** via
+  a pandas reindex onto the seed-tags × classes grid (presentation reshaping, not a computed fact).
+- **Palettes:** bars + heatmap use a **sequential blue ramp**; the **scatter uses a distinct
+  categorical palette** (blue/green/magenta/amber/aqua, CVD-validated) because there colour is
+  identity, not magnitude (§4b). `primaryColor = #2171b5`, `base = light` in `config.toml`.
+- **Numbers are read from gold at render time — none hardcoded.** Every coefficient, mean, σ, count,
+  and denominator in the captions is computed from the marts, so a daily refresh moves the prose too.
+- **Gold touched (small, additive):** `mart_size_vs_lifespan` gained `life_span_min_years` /
+  `life_span_max_years` (pass-through from `dim_breeds`, contract updated) so the longest-lived table
+  can show each breed's published range. `min≤max` already tested upstream, so no new test.
+- **Axis zoom + legend polish:** y-axes zoom to data ±10% (C1 band-aware); the scatter legend swatches
+  drop their outline (`symbolStrokeWidth=0`), plot points keep theirs.
+
+**Still genuinely open (next milestones):** the README narrative (M6 last box, drawn from §5) and the
+PDF/screenshot export (delivery). Neither changes the app.

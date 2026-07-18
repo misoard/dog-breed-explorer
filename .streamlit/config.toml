@@ -1,0 +1,9 @@
+# The one home of the dashboard's look-and-feel (DASHBOARD.md §4a).
+# Light theme, native only — no custom CSS anywhere in the app.
+[theme]
+base = "light"
+primaryColor = "#2171b5"          # the calm blue accent; the chart size-ramp is derived from it
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f2f6fb"   # very light blue-gray for cards / expanders
+textColor = "#1a1a1a"
+font = "sans serif"               # Streamlit's default clean sans; not swapped
