@@ -140,6 +140,14 @@ models:
         description: Read straight from dim_breeds, whose accepted_values guards the domain.
       - name: weight_mid_kg
         data_type: double
+      - name: life_span_min_years
+        data_type: integer
+        description: >
+          Published lower bound, pass-through from dim_breeds. Carried so the dashboard's
+          longest-lived table can show the range; min<=max is tested on dim_breeds, not here.
+      - name: life_span_max_years
+        data_type: integer
+        description: Published upper bound, pass-through from dim_breeds.
       - name: life_span_mid_years
         data_type: double
 

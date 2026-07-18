@@ -19,8 +19,8 @@ every decision below is mine to defend.
 
 Before designing anything I profiled the source (`exploration/profile_breeds.py` → `PROFILE_REPORT.md`)
 and built a disposable Streamlit explorer (`exploration/explore_app.py`) to eyeball relationships and
-settle the size buckets. Both are **scratch, deleted after this milestone** — the dashboard reads the
-gold marts, never that rough in-app parse. What the exploration decided:
+settle the size buckets. The dashboard reads the gold marts, never that rough in-app parse. 
+What the exploration decided:
 
 **Shape of the source.** **628 breeds in raw; 627 in `dim_breeds`** after the Caucasian Shepherd
 dedupe — the two are not interchangeable and every gold-grain number below is post-dedupe. `id` is
@@ -48,8 +48,7 @@ breeds** with weight + life span both present — small enough that the honest f
     disappears. Same data, opposite impression, nothing telling the reader which they're seeing. The
     chart would manufacture a relationship whose strength I dialled in. It matters here specifically
     because the real finding is an *elbow* (flat toy→medium, then a drop), and on a dual axis the
-    elbow's position is a styling decision. Two charts, one scale each, same category order: the
-    comparison survives, the fabrication doesn't.
+    elbow's position is a styling decision.
 - **`size_class` / `mean_life` table.** The numbers behind the chart. Also carries the nuance the
   chart hides: the decline is **flat across toy→medium (13.3 → 13.0) then drops sharply** for large
   and giant. The size penalty is a *large-and-giant* effect, not a smooth gradient — worth stating
@@ -73,6 +72,18 @@ breeds** with weight + life span both present — small enough that the honest f
   variance honestly; a bar chart alone would oversell −0.67. (I explored a per-band correlation
   matrix that made this precise, and dropped it — too much machinery for the point. The sentence
   survives; the table doesn't.)
+- **A "longest-lived breeds" table under the scatter — almost for free, and an honesty lesson.**
+  Added in M6 as a filter/sort of the mart the scatter already reads (top-N is the read layer's job),
+  so it cost one small, *additive* gold change: `mart_size_vs_lifespan` gained `life_span_min_years` /
+  `life_span_max_years` as a pass-through from `dim_breeds` (already tested there — `min≤max` — so no
+  new test). What made it worth recording is the **ordering question it forced**: the five
+  longest-lived breeds are **identical on every life-span number — all 12–18 yr** (min, max, *and*
+  midpoint equal). So there is no honest way to rank them; any sort by life span is a five-way tie.
+  I list them **alphabetically** and show the published *range* rather than inventing a 1–5 order the
+  data can't support — the same refusal-to-oversell that governs the ±1σ bars and the no-dual-axis
+  rule. What differs between them is size, not lifespan (they run toy→medium), which is the actual
+  fact the table leaves the reader with. Ranking by `max` instead would be worse: 8+ breeds tie at
+  max 18. The midpoint cut is the one that yields a clean five.
 - **Top temperaments per size class, as a % of the class.** This is what makes **temperament** — one
   of the three fields the brief names — a headline fact instead of a bridge table nobody opens.
   `Giant: calm 72% · protective 61%` / `Toy: alert 68% · playful 63%`, and the narrative writes
@@ -871,18 +882,70 @@ GitHub `::warning::` annotations plus a `$GITHUB_STEP_SUMMARY` table.
 - **With more time:** Dagster if the DAG grew beyond a handful of steps or needed richer
   backfills/observability.
 
-## 7. Dashboard & visualization — **[Streamlit / Evidence.dev]**
+## 7. Dashboard & visualization — **Streamlit, thin, spec-first**
 
-- **Chose:** _[tool]_, delivered as _[PDF export / screenshots in README / hosted link]_.
-- **Questions answered (≥2):** _[which of the four, e.g. size vs life span; weight-class
-  distribution]_
-- **Narrative:** the README says **what the data says** (e.g. "smaller breeds tend to live
-  longer"), not just what the charts show.
-- **Thin by design:** reads the gold marts, minimal presentation logic only.
-- **Reads the local `dogs.duckdb` (the prod target), demoed live** — not a hosted deploy. CI proves
-  the pipeline; the laptop serves it. The reasoning is in §5, and it's a deliberate POC scope call.
-- **With more time:** _[hosted deploy on Streamlit Cloud reading MotherDuck; more questions;
-  interactivity]_
+- **Chose:** **Streamlit**, reading the gold marts from the local prod `dogs.duckdb`, **demoed live**
+  (delivery = PDF/screenshots, not a hosted URL — §5). Light theme, centered narrative width, native
+  theming only (no custom CSS). Charts in **Altair**.
+
+- **The approach — a spec (`DASHBOARD.md`) before a line of the app, the same contract-first
+  discipline as tests-before-models.** The dashboard had been decided in fragments across §0, SPEC and
+  CLAUDE over every milestone; writing it down first **froze the panels, their marts, the chart types,
+  the tables, the section order and the narrative** so the build *renders* a spec rather than inventing
+  one. It also forced the genuinely-open choices into the open — layout (one scrolling page vs tabs),
+  interactivity (is `size_class` a filter or just an axis), the scatter palette — to be decided on
+  purpose rather than by a default. `DASHBOARD.md` is the contract; **this section is the layer-level
+  *why*, and the per-chart honesty reasoning stays in §0 — I point at it rather than restate it.**
+
+- **Thin, stated concretely.** The app reads gold and renders; it computes **no fact**. Every number
+  on the page — the correlations, the means, the σ, the coverage denominators — is read from the marts
+  *at render time*, never hardcoded, so the daily refresh moves the prose with the data. The only
+  app-side work is *selecting rows already in a mart* (filter / sort / top-N) and drawing **chart
+  geometry** (the ±1σ bars off `mean`/`stddev`, an axis domain off `min`/`max`) — presentation, not the
+  business logic that lives in gold. When the longest-lived table needed a published range the app
+  didn't have, the fix was to push the columns **into the mart**, not to reach into `dim_breeds` from
+  the app: keeping the app thin is a constraint that pays out in one direction — a new need becomes
+  tested gold, not read-layer cleverness.
+
+- **The narrative is the deliverable, not the charts.** One scrolling page read top-to-bottom —
+  coverage → distribution → does size cost life span (the finding + its own evidence) → temperament —
+  **not** the brief's four numbered questions. The order *is* the argument, and the README draws its
+  plain-language claims ("smaller breeds tend to live longer, but weakly per dog") from DASHBOARD §5.
+  Three of the four suggested questions are answered; the numbered-question framing was dropped because
+  a reader follows a story, not a checklist.
+
+- **The visualization rules are honesty rules, carried over from §0.** No dual-axis chart (two y-scales
+  fabricate a relationship); the ±1σ band ships **with** every mean (a bare mean oversells the trend);
+  the temperament panel is a **heatmap, not a radar** (a radar's "rotation" is an axis-order styling
+  artifact — the same sin as the dual axis); every chart prints **its own** population, per field,
+  because coverage is uneven by class. These were argued in §0; DASHBOARD.md turns them into per-panel
+  contract.
+
+- **Two visualization calls made at build time (M6), not in §0:**
+  - **Categorical colour where the variable is an identity.** Bars and the heatmap use a **sequential**
+    blue ramp (a magnitude → one hue, light→dark). The **scatter uses a distinct categorical palette**
+    (validated CVD-safe with the dataviz `validate_palette.js`): there the x-axis already encodes the
+    size *ordering*, so colour is freed to encode *identity*, and five blue shades were
+    indistinguishable in the cloud. It is the one place categorical hues are right — a deliberate
+    override of the spec's first "always sequential" line, made **after** the blue ramp proved
+    illegible, not before.
+  - **Axes zoom to the data (±10%), not to zero.** An axis domain is rendering geometry, not a shown
+    fact, so computing it from `min`/`max` stays inside the thin rule. But zooming a trend off zero
+    makes it look steeper — the exact zero-suppression §0 distrusts — so the mean-life-span chart bounds
+    its zoom on the **±1σ band** and keeps that band in view as the honesty guard. The band is what buys
+    the zoom its honesty.
+
+- **Tables earn their place beside the charts.** The coverage strip states, per field, what the whole
+  page is drawn from (627 · 625 weight · 587 life span · 626 temperament), and each chart repeats its
+  own denominator so no plot silently implies 627. The **longest-lived table** is a top-N of the
+  scatter's own mart — and it forced the most instructive honesty call on the page: the five
+  longest-lived breeds are **identical on every life-span number (12–18 yr)**, so they cannot be ranked;
+  they are listed alphabetically with the range shown, not in a fabricated 1–5 order (§0). What differs
+  between them is size, not lifespan — which is the fact the table actually leaves the reader with.
+
+- **Traded off:** no hosted URL — the demo is live off the laptop (§5); and the dashboard is
+  deliberately un-clever (native Streamlit, no bespoke CSS), which reads as plain beside a hand-built
+  web app but stays thin, stable across Streamlit versions, and reviewable.
 
 ## Bonus — LLM enrichment **[if fundamentals are solid first]**
 

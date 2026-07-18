@@ -26,7 +26,7 @@ Business logic lives in dbt gold; the dashboard stays thin.
 | gold | `dim_breeds` | dbt | clean + derived (size_class, midpoints) |
 | gold | `breed_temperaments` | dbt | bridge, exposed for querying |
 | gold | `mart_size_class_summary` | dbt | grain: size_class — counts + mean life span (retires `mart_weight_distribution`) |
-| gold | `mart_size_vs_lifespan` | dbt | grain: breed — scatter-ready (weight + life span only) |
+| gold | `mart_size_vs_lifespan` | dbt | grain: breed — scatter-ready (weight + life span mid, **+ published min/max** for the longest-lived table) |
 | gold | `mart_metric_correlation` | dbt | grain: (metric_a, metric_b) — 3 rows + `n_breeds` |
 | gold | `mart_size_class_temperaments` | dbt | grain: (size_class, temperament) — count + % within class |
 | gold | `mart_data_coverage` | dbt | one row — what each chart drops (627 total, 585 plotted) |
@@ -574,7 +574,13 @@ on `size_class` is drift waiting to happen.
   in the mean and weak per-dog. Without the std, the chart oversells −0.670 exactly the way §0 says
   the bar chart would.
 - **`mart_size_vs_lifespan`** — grain: **breed** (one row per breed, ready to scatter).
-  `breed_id, breed_name, size_class, weight_mid_kg, life_span_mid_years`.
+  `breed_id, breed_name, size_class, weight_mid_kg, life_span_min_years, life_span_max_years,
+  life_span_mid_years`.
+  **`life_span_min_years` / `life_span_max_years` added in M6** (pass-through from `dim_breeds`): the
+  dashboard's longest-lived table needs each breed's **published range**, because the top breeds tie on
+  the midpoint (the five highest are all 12–18) and the range is what makes that tie legible. `min<=max`
+  is already tested on `dim_breeds` (`assert_lifespan_min_le_max`), so the pass-through needs no new
+  test. Contract updated (the mart is enforced).
   **No `height_mid_cm`** — its only consumers were the height-vs-weight view and the scaling fit,
   both cut. Height remains a breed fact in `dim_breeds` and `mart_size_class_summary`; it just has
   no reader here. A column with no consumer is a column that rots.
