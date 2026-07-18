@@ -234,20 +234,20 @@ warn-severity test → exit 0. The line it draws: **a broken wire is an error; u
 warning.** Corollary: watch `Found N data tests` (now **26**) — it's the cheap check that nothing
 vanished.
 
-### I broke the user's TensorFlow, and the venv was the answer all along
+### We broke my conda TensorFlow stack, and the venv was the answer all along
 
-I installed dbt into miniconda **base** without asking. dbt-core needs `protobuf>=6`; TensorFlow
-needs `<4`. **They cannot coexist** — protobuf went 3.x → 6.33.6 and `import tensorflow` died. Same
+Installing dbt into miniconda **base** broke my TensorFlow. dbt-core needs `protobuf>=6`; TF needs
+`<4` — **they cannot coexist**, so protobuf went 3.x → 6.33.6 and `import tensorflow` died. Same
 install timestamp on both `dist-info` folders; no ambiguity about the cause.
 
 Fixed: removed the 19 dbt packages from base, restored `protobuf==3.19.6`, verified TF imports. The
-project now lives in **`.venv`**, which is also exactly what CI does (`pip install -r
-requirements.txt` into a clean env) — so "works locally" and "works in CI" became the same claim.
-Also found a **pre-existing** conflict that isn't mine: base's streamlit needs `protobuf>=3.20`,
-TensorFlow needs `<3.20`. No version satisfies both; base can run one or the other.
+project now lives in **`.venv`**, which is exactly what CI does (`pip install -r requirements.txt`
+into a clean env) — so "works locally" and "works in CI" became the same claim. We also turned up a
+**pre-existing** conflict that predates this: base's streamlit needs `protobuf>=3.20`, TensorFlow
+needs `<3.20`; no version satisfies both, so base runs one or the other.
 
-**Lesson:** ask before touching an environment I didn't create. The sandbox blocked my `~/.ssh/config`
-edit for the same reason and was right to.
+**Lesson:** don't install into an environment we didn't create — use the project venv. (The sandbox
+blocked a `~/.ssh/config` edit for the same reason, and was right to.)
 
 ### Reversed mid-milestone: absorb the problem, keep the signal
 
@@ -775,3 +775,51 @@ than hidden by a box I talked myself into ticking.
 
 **Next:** open the PR, watch the first CI run, close M5's three open boxes on the evidence — then M6
 (Streamlit reading the local prod build) + the README, where the badge lands.
+
+## M6 — the dashboard, and the two rules that kept catching the first drafts
+
+The dashboard was where the spec-first habit paid off, and where we made the most reversals — most of
+them caught by the two rules I'd enforced all week (**thin**, **honest**) turned back on our own first
+attempts. I wrote `DASHBOARD.md` in full — panels, the single mart each reads, chart types, the honesty
+shown beside each — before a line of Streamlit, and surfaced the genuine open choices (layout,
+interactivity, palette) as questions instead of assuming them. It paid off: every reversal below
+happened at the *design* layer, in the spec or the live app, never as a rebuild of finished code.
+
+### The reversals, and what forced each
+- **Radar → heatmap.** We nearly shipped a temperament chart whose headline finding — "the shape
+  rotates as size increases" — I could *move or erase just by reordering the spokes*. Same sin as the
+  dual axis, one layer over. A heatmap says the same thing but can't be tuned by ordering.
+- **Sequential blue scatter → distinct colours.** The spec I'd written said "size is ordinal, so one
+  blue ramp, never categorical," and we built it that way. In the dense cloud five blue shades were
+  indistinguishable — my own rule cost real legibility. Going to fix it, the dataviz validator
+  *rejected* every cohesive "stay in blue" palette we tried (a cohesive-cool set can't clear
+  colour-blind separation — proven, not argued), which is what turned distinct hues from a preference
+  into a requirement: on a scatter where x already carries the size order, colour is free to carry
+  identity. We overrode the spec and wrote the override down.
+- **Hardcoded numbers → read from gold.** I caught Claude baking `−0.67` and `13.3→10.6` into the
+  captions as literals — the exact thin-layer sin I'd been policing in the pipeline, resurfacing in the
+  read layer: a daily refresh would move the coefficient and the prose would lie while the chart
+  updated. Now every number on the page reads from the marts at render time.
+- **`CLASS_ORDER` from the seed.** The size-band *boundaries* were single-sourced from the seed; the
+  label *order* wasn't. We first parked that as a "with more time" note, then decided that was a
+  cop-out and pulled the order straight from the seed the app already loads.
+
+### What we got wrong (and caught)
+- **Scope creep.** Asked to make the scatter colours distinguishable, Claude *also* recoloured the
+  distribution histogram — which I was happy with. Reverted. A scoped request is a scoped request.
+- **The longest-lived table shipped midpoint-only first** — five identical `15.0` rows with no visible
+  reason they were "the top." The fix was a small *additive* gold column (project `life_span_min/max`
+  from `dim_breeds` into the mart), not app-side cleverness — a new need became tested gold. It also
+  forced the honest ordering call: the five are identical on every life-span number (all `12–18`), so
+  there's no ranking to make — list them alphabetically and say so.
+- **A stale count nearly shipped.** The README said "35 tests" (the M4 figure); M6's dashboard seed had
+  already taken it to **39** (`PASS` 45→50: 9 models + 2 seeds + 39 tests). The milestone audit caught
+  it — without that check I'd have shipped a README that undercounted its own suite.
+
+### Still open
+- **M7 (LLM bonus)** and **M8 (polish/submit)** — not started.
+- **Observability** (run-metadata → an audit table, Elementary) is in DECISIONS "what I'd build next,"
+  not built — and it shares the durable-storage prerequisite I deferred at M5, so it'd land alongside a
+  hosted dashboard.
+- The dashboard is **local-only** by design (not in CI). The README screenshots are chart *exports*; we
+  tried a full-page Playwright capture and reverted it as not worth a 93 MB browser for a POC.

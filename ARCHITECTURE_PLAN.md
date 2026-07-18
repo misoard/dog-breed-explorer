@@ -411,7 +411,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       directly.
 
 **M6 — Dashboard + narrative (Day 4 pm)**
-- [ ] **`DASHBOARD.md` FIRST — the spec + design, before any Streamlit code.** Contract-first, same
+- [x] **`DASHBOARD.md` FIRST — the spec + design, before any Streamlit code.** Contract-first, same
       discipline as tests-before-models: a fresh session should render a spec, not invent one. The
       dashboard was largely decided back in M0.5 and refined since (DECISIONS §0 mentions it 40×); this
       consolidates it in one place so nothing fought-for gets rebuilt from scratch. Per panel: what it
@@ -421,6 +421,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       genuine open questions surfaced via AskUserQuestion rather than assumed. Frozen already: 3
       questions / 5 marts; **never a dual-axis chart** (§0); **every chart prints its population**
       (585/627); **±1σ on the mean line is required, not optional**.
+      → **DONE** — `DASHBOARD.md` written and shipped first, then synced to the built app.
 - [x] **M6 touches a small bit of gold — one config seed + one WARN test (landed before the app).**
       The temperament panel (DASHBOARD.md §D) is a **heatmap** (Altair `mark_rect`) reading the
       **unchanged** `mart_size_class_temperaments` — radar was rejected because its "rotation" is an
@@ -431,23 +432,29 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       the 5 tags and proven to `WARN 1` on an injected casing-mismatch (`Calm`). A seed+grid mart /
       `is_dashboard_axis` flag was considered and **rejected** (bakes the cut into gold, contradicting
       the mart's own header). Reasoning in DECISIONS.md §0; contract in DASHBOARD.md §D.
-- [ ] Streamlit reads the gold marts from the **local `dogs.duckdb`** (the prod target build) and is
+- [x] Streamlit reads the gold marts from the **local `dogs.duckdb`** (the prod target build) and is
       demoed live — not hosted. Thin: no logic, no parsing, no `pd.cut` — all of that is in the marts.
       Renders the panels `DASHBOARD.md` specifies; answers ≥2 (we ship 3) questions.
-- [ ] **README narrative — the brief's actual words:** *"a short narrative that tells us what the
+      → **DONE** — `dashboard/app.py` + `.streamlit/config.toml`, shipped (commit df7a8e0). Thin,
+      every number read from gold at render time; `CLASS_ORDER` single-sourced from the seed.
+- [x] **README narrative — the brief's actual words:** *"a short narrative that tells us what the
       data SAYS, not just what the charts show."* So: not "here is a bar chart of size classes" but
       **"smaller breeds tend to live longer — 13.3 yr toy → 10.6 yr giant — though the spread grows
       with size, so it's a real trend that's weak for any individual dog."** State the claim, then
       the honest caveat (midpoint of published range, not a prediction; n=585 of 627). One
       plain-language paragraph per question, drawn from `DASHBOARD.md`'s narrative section.
-- [ ] **Delivery: a PDF export OR a link, per the brief** (*"deliver a link or a PDF export"*).
+      → **DONE** — `README.md`: front door (setup + folder + run) AND the per-question narrative,
+      per the brief's two README asks (Version control §4 + Dashboard §7).
+- [x] **Delivery: a PDF export OR a link, per the brief** (*"deliver a link or a PDF export"*).
       Decided: **local demo + PDF/screenshots**, not a hosted link — CI proves the pipeline, the
       laptop serves it (DECISIONS §5). So the deliverable is the README narrative + exported
       screenshots of the live app, not a URL.
-- [ ] **CI badge at the top of the README** — one line, and it finally feeds the `push: main`
+      → **DONE** — four chart exports in `docs/img/`, embedded in the README under each question.
+- [x] **CI badge at the top of the README** — one line, and it finally feeds the `push: main`
       trigger that until now had no consumer. Caveat to note: the badge shows "no status" without
       repo access, which is fine for reviewers (they have read access) — worth a footnote so nobody
       reads it as broken.
+      → **DONE** — badge at the top of the README, with the "no status without access" footnote.
 
 **M7 — LLM bonus (Day 4 pm, only if M0–M6 solid)**
 - [ ] Enrichment from **temperament + description** (NOT bred_for — it's 100% null per profiling)
@@ -468,6 +475,37 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 - [ ] Finish DECISIONS.md incl. "what I'd do next".
 - [ ] Rehearse: walk any dbt model, explain `ref()` + the lineage graph, one decision I'm proud of + one I'd change.
 - [ ] Submit repo link with read access.
+
+**M9 — Observability (OPTIONAL STRETCH — only if M0–M8 are rock-solid and there's slack)**
+> Answers the brief's observability bonus ("extended tests wired to an alert channel"). Do NOT start
+> this at the expense of debrief prep — Michael tests dbt understanding heavily, and a half-finished
+> integration reads worse than a crisp "here's how I'd do it." The brief says local/free-tier is fine
+> and explicitly is NOT scoring production polish. So: **local first, cloud only as a further stretch.**
+- [ ] **Elementary (local) — the high-ROI, safe version.** Install the `elementary-data` dbt package
+      → it captures every test result (pass/warn/fail, timings) from `run_results.json` into tables
+      and generates an observability **report/dashboard** as an artifact. Runs against the local
+      `dogs.duckdb` — **no cloud, no new credential, ~1 hour.** A single-run report already answers the
+      bonus; it's demonstrable in the debrief ("here's the test-health dashboard, generated locally").
+- [ ] **The debrief framing** (true whether or not the cloud half is built): *GitHub already solves
+      compute + scheduling for free; the only deferred piece is durable storage. Observability's
+      point-in-time health is stateless-doable (that's `annotate_warns.py` + a local Elementary
+      report); the trend view — is the null rate creeping over a week? — needs persistence.*
+- [ ] **Cloud stretch (only if everything else is done):** point the prod target at **MotherDuck**
+      (`path: "md:dogs"` — hosted DuckDB, zero model change, Lesson: materialization is a deployment
+      decision) so gold persists past the cron VM. Then Elementary's tables accumulate **day-over-day
+      trends**, and a hosted Streamlit reads the same store → a live URL, refreshed at 02:00. This is
+      the single durable-storage unlock DECISIONS "what I'd build next" describes — observability
+      trends + history/SCD-2 + hosted serving, all from one connection string. Skip if time-boxed;
+      it's the polish the brief says it isn't scoring.
+- [ ] **Hosted dashboard URL (follows for free once MotherDuck is in place).** Deploy `app.py` on
+      **Streamlit Community Cloud** (free): point it at the GitHub repo, add the `MOTHERDUCK_TOKEN` as
+      a platform secret (same pattern as `DOG_API_KEY`), and change one line — `duckdb.connect("md:dogs")`
+      instead of the local file (app.py line 57). **The dashboard now queries the cloud store over a
+      public URL, always showing last night's cron refresh — no laptop involved.** This is what turns
+      the brief's *"deliver a link or a PDF export"* from PDF/screenshots (the POC choice, §5) into an
+      actual live **link**. Full served stack: GitHub repo → Streamlit Cloud (runs app.py) → reads
+      `md:dogs` → MotherDuck (gold, refreshed 02:00 by the cron). Three free-tier services, two
+      connection-string changes, zero model changes.
 
 ---
 

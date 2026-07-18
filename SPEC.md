@@ -85,9 +85,10 @@ One means the pipeline is lying about its coverage; the other means the world ch
 **Corollary — watch `Found N data tests`.** It is the only cheap check that nothing silently
 vanished. Post-M2 it read **26**; post-M3 (marts + the bridge + their tests) **9 models, 65 data
 tests**; M4's guards took it to 68, and **M4's test audit then cut 33 unfireable tests** — so
-post-M4 it must read **9 models, 35 data tests** (`PASS=45`). See "CUT at M4 (33)" below.
-`scripts/audit.py` prints this first, before the build result, for exactly this reason: a number
-that only ever goes up is easy to stop reading.
+post-M4 it read **9 models, 35 data tests** (`PASS=45`); **M6's `dashboard_temperament_tags` seed
+then took it to 9 models, 39 data tests (`PASS=50`)** — 9 models + 2 seeds + 39 tests. See "CUT at
+M4 (33)" below. `scripts/audit.py` prints this first, before the build result, for exactly this
+reason: a number that only ever goes up is easy to stop reading.
 
 **And the count went *down*, which is the whole point of watching it.** Every prior milestone moved
 it up, so "did it grow?" was never a real check — the first number that ever fell is the one that
@@ -390,10 +391,13 @@ artifact, not two breeds.
    the load-bearing one: it's what fails if the join fans out, which is the realistic bug in a mart
    built from a bridge.
 
-### The suite is classified — 35 tests, and every one can fail
+### The suite is classified — 39 tests, and every one can fail
 
-**Audited at M4's close and cut from 68 to 35.** The question asked of each test was not "is it
-nice to have?" but **"what mutation makes it fail, and would something else catch that first?"**
+**Audited at M4's close and cut from 68 to 35** (M6 then added the **4 `dashboard_temperament_tags`
+seed guards** — `unique`×2, `not_null`, and the WARN `relationships` — → **39**; they're the seed
+guards in the REGRESSION table below, same shape as the `size_class_bands` ones). The question asked
+of each test was not "is it nice to have?" but **"what mutation makes it fail, and would something
+else catch that first?"**
 A test that cannot fail is not coverage — it is a claim of coverage, which is worse, because it is
 the one you trust when it matters. The same argument as a dropped test, a permanent warn, and a
 guard reporting green about the nine numbers it watches. Three categories, and every test is in one:
