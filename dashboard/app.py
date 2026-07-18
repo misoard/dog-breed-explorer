@@ -27,8 +27,12 @@ REPO = Path(__file__).resolve().parent.parent
 DB_PATH = REPO / "dogs.duckdb"                                   # the prod build the dashboard reads
 SEED_PATH = REPO / "dbt" / "seeds" / "dashboard_temperament_tags.csv"  # the curated heatmap tags (config)
 
-# The size axis order is fixed everywhere (shared class order across B, C1, D).
-CLASS_ORDER = ["toy", "small", "medium", "large", "giant"]
+# Size-class order is single-sourced from the size_class_bands seed the model bands off: sort by the
+# lower bound and take the labels, so the dashboard's axis order can never disagree with the warehouse's
+# banding. Read once here (plain, not cached — 5 rows, and it runs before st.set_page_config) and reused
+# for the per-band kg ranges in panel B, its only other consumer.
+BANDS = pd.read_csv(REPO / "dbt" / "seeds" / "size_class_bands.csv").sort_values("min_kg").reset_index(drop=True)
+CLASS_ORDER = BANDS["label"].tolist()
 # The distribution bars (B) keep the ORDINAL blue ramp (light=toy → dark=giant): on a bar chart the
 # order reads well and the bars are already separated by position, so a single sequential hue is right.
 SIZE_RANGE = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b"]
@@ -64,13 +68,6 @@ def seed_tags() -> list[str]:
     # it is the same file dbt loads, so the list can never drift from what the WARN test guards.
     tags = pd.read_csv(SEED_PATH).sort_values("sort_order")
     return tags["temperament"].tolist()
-
-
-@st.cache_data
-def size_bands() -> pd.DataFrame:
-    # The weight boundaries (config), read from the same seed the model bands off — so the labels the
-    # dashboard prints can never disagree with the size_class the mart assigned.
-    return pd.read_csv(REPO / "dbt" / "seeds" / "size_class_bands.csv")
 
 
 def ordered(df: pd.DataFrame) -> pd.DataFrame:
@@ -124,9 +121,8 @@ st.divider()
 st.header("How are breeds distributed across weight classes?")
 # Print each band's kg range under its name, read from the size_class_bands seed, so the reader knows
 # what "medium" means. Half-open [min, max): giant has no ceiling (the 999 sentinel → "≥45 kg").
-_bands = size_bands()
 _range = {r.label: (f"≥{int(r.min_kg)} kg" if r.max_kg >= 999 else f"{int(r.min_kg)}–{int(r.max_kg)} kg")
-          for r in _bands.itertuples()}
+          for r in BANDS.itertuples()}
 bar_df = summary.copy()
 bar_df["band"] = bar_df["size_class"].astype(str).map(_range)
 bar_df["xlabel"] = bar_df["size_class"].astype(str) + "|" + bar_df["band"]

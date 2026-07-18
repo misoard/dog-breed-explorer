@@ -660,6 +660,36 @@ So contracts only mean anything on the marts. On staging they'd be theatre. See 
   Each cut therefore carries its reasoning *at the column* in the YAML, not in a commit message —
   so the next person changing that model reads why the test isn't there before removing the premise
   it rested on.
+- **Hand-written singular tests over `dbt_utils` — a case-study choice, not a production one.**
+  `dbt_utils` is the community package of pre-built generic tests, and it would have replaced roughly
+  seven of my custom ones with one-line calls:
+
+  | my custom test | `dbt_utils` equivalent |
+  |---|---|
+  | `assert_tag_unique_per_breed` | `unique_combination_of_columns` (breed_id, temperament) |
+  | `assert_weight_mid_plausible`, `assert_lifespan_plausible` | `accepted_range` |
+  | `assert_weight_min_le_max`, `assert_height_min_le_max`, `assert_lifespan_min_le_max` | `expression_is_true` |
+  | `assert_tag_lowercased` | `expression_is_true` |
+
+  I wrote them by hand **deliberately, and I'd defend it exactly this way:**
+  - **This is a case study graded on whether I *understand* dbt** (Michael's email says so outright).
+    A singular test I can open and walk line by line proves comprehension; `{{
+    dbt_utils.accepted_range(...) }}` is a black box I'd have to admit I didn't write. I wanted to
+    **uncover the black box**, not import it — the whole point of the exercise is to show the
+    mechanism, and a hand-written `SELECT` that returns bad rows *is* the mechanism, laid bare.
+  - **~8 tests were never in `dbt_utils` anyway** — the independent unit-ratio parse
+    (`assert_unit_ratio_plausible`), `assert_no_breed_lost`'s raw→gold reconciliation, the
+    notation-shape regex (`assert_metric_shape_known`), the aggregate-rate guards. Those *had* to be
+    custom. So a `dbt_utils` suite would have been **mixed** — some imported, some bespoke. I chose
+    **uniformity**: every test the same shape, all readable, no dependency, one mental model for the
+    reader.
+  - **In production I'd flip this.** Reinventing `accepted_range` is silly at scale — I'd lean on
+    `dbt_utils` for the boilerplate and keep only the genuinely-bespoke ~8 as singular tests. The
+    right default is "use the package for what it covers"; the case study is the exception, on
+    purpose.
+  - **The line to avoid** is "not worth a dependency" — a reviewer who knows `dbt_utils` hears "he
+    doesn't know `accepted_range` exists." Owning that I know it and chose against it *for this
+    context* is the credible version.
 - **Where computation lives:** business logic (parsing, derived attributes, key aggregations) is
   pushed **upstream into the gold layer**, so the dashboard stays thin and the logic is
   centralized, tested, and reusable. _[state this explicitly — it's a key design point]_
@@ -978,5 +1008,50 @@ GitHub `::warning::` annotations plus a `$GITHUB_STEP_SUMMARY` table.
 ---
 
 ## What I'd build next given another week
-_[3–5 bullets: run-metadata/audit table + alerting; change detection; hosted dashboard; more
-marts; snapshots for history; IaC (Terraform) for reproducibility]_
+
+**The first move unlocks most of the rest: durable storage.** Four of the items below share one
+prerequisite, so I'll name it once. The POC is stateless by choice (§1) and CI discards its warehouse
+(§5) — right for near-static breed data. But **persistence between runs is the single thing that
+unlocks history, and history unlocks almost everything else.** I'd use **MotherDuck** — hosted
+DuckDB, so **zero code change**: same SQL, same dbt, just a different connection string in place of
+the local `.duckdb`. (S3 or a Release asset also work; **GitHub artifacts don't** — retention-capped,
+meant for build outputs, awkward to read back, not a store you'd trust.) The cost is **operational,
+not financial**: a 2 MB database is fractions of a cent on S3 and inside MotherDuck's free tier for
+one daily job — what it adds is a credential and a moving part a POC doesn't need. Once it exists:
+
+- **Observability** — the mirror image of statelessness: you cannot reconstruct "what failed last
+  Tuesday" from the API. Run history is **append-only, non-reproducible state**, so an audit layer
+  doesn't contradict §1 — it persists metadata *about* runs, never the breed data. Parse
+  `run_results.json` each run into `audit.pipeline_runs` (`run_date, node, status, failures,
+  execution_time`) — exactly the day-over-day history `assert_no_breed_lost` lacks (§3: it can't see
+  the *source* changing size because nothing remembers yesterday's count). Point-in-time health is
+  stateless-doable (that's `annotate_warns.py`); the *value* is trends, which need yesterday. I'd
+  reach for **Elementary** (the dbt-native observability package that does this and ships a
+  dashboard), not hand-roll it — same instinct as dbt_utils. *(Serves the brief's "extended tests
+  wired to an alert channel" bonus.)*
+- **Change history → the scaling path.** dbt **snapshots (SCD-2)** in `snapshots/` (`strategy='check'`
+  since the API gives no `updated_at` — it compares column values to detect change, the analytics-side
+  equivalent of CDC). A row is versioned only when a breed actually changes — the "what did this breed
+  look like last month?" question §1 defers. This is also what unlocks **incremental models** at
+  scale: "only reprocess what changed" needs a change signal and a prior state to diff against, i.e.
+  history. At 627 rows full-refresh wins (simpler, idempotent for free); the moment a rebuild is
+  measured in minutes or dollars, snapshots + incremental are the answer.
+- **The LLM cost story — where the money actually goes.** *(The brief asks for "a short paragraph on
+  what this pipeline would cost to run daily at real scale.")* The pipeline compute is ~free — DuckDB
+  rebuilds 627 rows in a second. **The bill is the LLM enrichment.** First run: 628 calls (batched),
+  one-time, fine. But re-calling the model **daily for byte-identical rows** is the entire ongoing
+  cost — real dollars and latency for zero new information. The fix is change-detection: hash each
+  breed, call the LLM **only on change** (≈0/day on a near-static source), which is precisely the
+  "cache by `breed_id`" in the enrichment spec — and it needs history. **So the expensive
+  *computation*, not the data, is what makes persistence pay for itself.** At real scale the money is:
+  LLM tokens (dominant, controlled by the cache), then hosted storage/compute (cents), then Actions
+  minutes (free tier). Everything non-LLM stays negligible; the whole cost question is "how often do I
+  re-run the model," and history is the lever.
+- **Hosted serving:** point a hosted Streamlit at the same MotherDuck store — turns the pipeline from
+  *proving* to *serving* with no model changes, resolving the M5 handoff (§5).
+
+Then the two that don't depend on storage:
+- **IaC:** Terraform the repo ruleset, Actions secrets, and (once hosted) the storage, so the whole
+  stack is reproducible from the repo rather than from three settings pages I clicked once.
+- **LLM enrichment (the bonus feature itself):** `energy_level` / `good_with_kids` from temperament +
+  description via Pattern A — specified above, not built.
