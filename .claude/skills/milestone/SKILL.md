@@ -60,17 +60,29 @@ Also reconcile, since `audit.py` only checks existence, not agreement:
 - a claim in one doc contradicted by another (**a claim a test has since disproved is not a
   disagreement — the test wins, fix the doc, and say so**)
 
-## 4. DAY_REPORT — the narrative the other docs deliberately drop
+## 4. DAY_REPORT — the day's narrative, in the user's voice
 
-Append/extend the day's section. **Problem → solution**, in the user's voice, leading with what
-would matter to someone who wasn't there. Include:
-- **reversals with their reasoning intact** — DECISIONS.md keeps only where it landed; this is the
-  only place the *path* survives, and a reversal you can explain is stronger evidence of thinking
-  than a decision never tested
-- **what broke and how it was caught** — especially anything a test caught that a human missed
-- **what I got wrong** — bad predictions, wrong claims, bugs in my own fixes. This is the most
-  valuable content in the file and the easiest to quietly omit
-- **what's still open**, honestly, including anything only *partly* verified
+**You write it, but it is the USER's daily record** — a report *for them* summing up what we
+achieved today, the problems we hit, and the solutions we found **together**. It is NOT your
+changelog, and emphatically NOT a log of the agent's own mistakes.
+
+- **Voice: first person, as the user/architect.** "I" is the user; "we" is the collaboration.
+  **Never write "the user" in the third person** — that breaks the frame and reveals the entry isn't
+  theirs. Claude is a tool the user directed ("I had it build X", "we caught Y late"), never the
+  narrator confessing to the reader.
+- **Content: achieved → problems → solutions.** Append/extend the day's section, leading with what
+  would matter to someone who wasn't there. Include:
+  - **what got achieved** — the milestone's real content, in a sentence or two, not a file list.
+  - **reversals with their reasoning intact** — DECISIONS.md keeps only where it landed; this is the
+    only place the *path* survives, and a reversal you can explain is stronger evidence of thinking
+    than a decision never tested.
+  - **what broke and how we caught it** — especially anything a test or audit caught that we'd have
+    missed.
+  - **what we got wrong** — bad predictions, wrong turns, a fix that needed fixing — framed as shared
+    learning ("we hardcoded the numbers first; caught it because a refresh would have lied"), never
+    as the agent apologising to the user. This is the most valuable content and the easiest to
+    quietly omit.
+  - **what's still open**, honestly, including anything only *partly* verified.
 
 Do NOT restate DECISIONS.md. Reasoning → DECISIONS · schema → SPEC · milestones → PLAN.
 
