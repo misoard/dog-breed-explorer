@@ -92,6 +92,46 @@ breeds** with weight + life span both present — small enough that the honest f
   from weight. (The case asks about "size" without defining it; this is where I define it as weight,
   and why.)
 
+### The temperament panel: a heatmap, and why the curated cut stays in the read layer
+
+**The chart: a heatmap** — `size_class` × curated tag, colour = `pct_of_class`. The rule behind the
+choice is the same one that bans the dual axis: **pick an encoding whose finding doesn't depend on an
+arbitrary ordering or scaling knob.** A heatmap's cell colour reads true regardless of row/column
+order, and there is no enclosed area to distort magnitude — so the finding survives any reordering
+and can't be tuned to flatter it. It reads as a clean **diagonal gradient** — playful bright at toy →
+protective/calm bright at giant — which *is* "temperament varies systematically with size", shown
+rather than asserted. A missing or stale tag is a blank *cell*, never a blank *chart*. Same standard
+as "two charts on a shared x-axis beat one dual axis": the honest encoding is the order-invariant one.
+
+**The curated cut stays in the read layer — the mart is untouched.** `mart_size_class_temperaments`
+holds every (class, tag) pair on purpose (its own header: *"TOP-N IS NOT HERE… bake the cut in and
+you can't change it without a rebuild"*). Selecting the five distinctive tags is presentation, the
+same category as top-N. I lifted that list out of an app literal into a **config seed**,
+`seeds/dashboard_temperament_tags.csv` (`temperament, sort_order`) — same playbook as
+`size_class_bands`: a hand-chosen constant that steers a chart, made reviewable in the repo and read
+by the app instead of hardcoded. The seed carries **only the list + order, never `pct_of_class`**,
+so it is *config, not a data grid* — the numbers still come from the untouched mart.
+
+**The alternative I named and rejected: a seed *plus* a grid mart (or an `is_dashboard_axis` flag on
+the mart).** It was tempting because it would let the app read a single dense, pre-filtered table.
+But baking the curated cut into gold directly contradicts the mart's header and the whole "top-N is
+the app's job" rule — you could no longer change which tags show without a warehouse rebuild, and
+you'd be storing a presentation decision as if it were a fact about dogs. The seed gives all the
+control (a reviewable, tested list) with none of that coupling. **Config in a seed; facts in the
+mart; the cut in the read layer.**
+
+**One test, and it earns its place — this is NOT the §3 "wallpaper" anti-pattern.** `relationships`:
+seed.temperament → `breed_temperaments.temperament`, **severity warn**. It fires on a typo, a
+casing/normalization mismatch (the bridge is lowercased+trimmed, so `'Calm'` matches nothing), or a
+vocabulary drift that drops a displayed tag — each of which silently empties a heatmap row. It
+guards the **integrity of a curated input**, exactly like `assert_size_class_bands_cover` guards the
+bands seed — not a guessed volume constant that rots (the cut §3 `assert_row_count_stable`). The
+tell: when this fires, **editing the seed IS the correct response**; when the wallpaper guard fired,
+bumping its constant was busywork. `warn`, not `error`, because a legitimate vocabulary change
+shouldn't fail the unattended cron — M5's `annotate_warns.py` surfaces it on the PR without breaking
+the build. Proven both ways: green on the five real tags; inject `Calm` and it reports `WARN 1`,
+exit 0. A cheap `unique` on the tag (error) stops a duplicated row doubling a heatmap row.
+
 ### Explored, deliberately NOT shipped: the isometry break (height vs weight)
 
 **A genuine finding, cut from the delivery.** Weight scales as **height^2.07**, not the **height^3**

@@ -64,7 +64,9 @@ dog-breed-explorer/
 │  ├─ dbt_project.yml
 │  ├─ profiles.yml               # dev + prod DuckDB targets (parameterized) — built in M2
 │  ├─ seeds/
-│  │  └─ size_class_bands.csv    # the ONLY home of the 5/12/25/45 boundaries (SPEC)
+│  │  ├─ size_class_bands.csv    # the ONLY home of the 5/12/25/45 boundaries (SPEC)
+│  │  └─ dashboard_temperament_tags.csv  # M6 config: curated heatmap tags + sort_order
+│  │                                     #   (list+order only, no pct — cut stays read-layer)
 │  ├─ models/
 │  │  ├─ staging/
 │  │  │  ├─ _sources.yml         # declares raw.breeds as a dbt source
@@ -409,9 +411,43 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       directly.
 
 **M6 — Dashboard + narrative (Day 4 pm)**
+- [ ] **`DASHBOARD.md` FIRST — the spec + design, before any Streamlit code.** Contract-first, same
+      discipline as tests-before-models: a fresh session should render a spec, not invent one. The
+      dashboard was largely decided back in M0.5 and refined since (DECISIONS §0 mentions it 40×); this
+      consolidates it in one place so nothing fought-for gets rebuilt from scratch. Per panel: what it
+      shows · which **single** mart (never a join in the app) · chart type + the rule that dictates it
+      · the claim it lets me write · the honesty shown alongside (n, σ, denominator). Plus the
+      **design/layout** (one scrolling page vs tabs; is `size_class` a filter or just an axis) and the
+      genuine open questions surfaced via AskUserQuestion rather than assumed. Frozen already: 3
+      questions / 5 marts; **never a dual-axis chart** (§0); **every chart prints its population**
+      (585/627); **±1σ on the mean line is required, not optional**.
+- [x] **M6 touches a small bit of gold — one config seed + one WARN test (landed before the app).**
+      The temperament panel (DASHBOARD.md §D) is a **heatmap** (Altair `mark_rect`) reading the
+      **unchanged** `mart_size_class_temperaments` — radar was rejected because its "rotation" is an
+      axis-order styling artifact, the same sin as the dual axis (§0). The curated distinctive tags
+      move out of an app literal into `seeds/dashboard_temperament_tags.csv` (list + `sort_order`
+      only — no `pct_of_class`, so the cut stays in the read layer, NOT baked into gold). Guarded by
+      `relationships` seed.temperament → `breed_temperaments` (**warn**) + `unique` — proven green on
+      the 5 tags and proven to `WARN 1` on an injected casing-mismatch (`Calm`). A seed+grid mart /
+      `is_dashboard_axis` flag was considered and **rejected** (bakes the cut into gold, contradicting
+      the mart's own header). Reasoning in DECISIONS.md §0; contract in DASHBOARD.md §D.
 - [ ] Streamlit reads the gold marts from the **local `dogs.duckdb`** (the prod target build) and is
-      demoed live — not hosted. Thin: no logic, no parsing, no `pd.cut`. Answers ≥2 questions.
-- [ ] README narrative: what the data SAYS. Export PDF/screenshots.
+      demoed live — not hosted. Thin: no logic, no parsing, no `pd.cut` — all of that is in the marts.
+      Renders the panels `DASHBOARD.md` specifies; answers ≥2 (we ship 3) questions.
+- [ ] **README narrative — the brief's actual words:** *"a short narrative that tells us what the
+      data SAYS, not just what the charts show."* So: not "here is a bar chart of size classes" but
+      **"smaller breeds tend to live longer — 13.3 yr toy → 10.6 yr giant — though the spread grows
+      with size, so it's a real trend that's weak for any individual dog."** State the claim, then
+      the honest caveat (midpoint of published range, not a prediction; n=585 of 627). One
+      plain-language paragraph per question, drawn from `DASHBOARD.md`'s narrative section.
+- [ ] **Delivery: a PDF export OR a link, per the brief** (*"deliver a link or a PDF export"*).
+      Decided: **local demo + PDF/screenshots**, not a hosted link — CI proves the pipeline, the
+      laptop serves it (DECISIONS §5). So the deliverable is the README narrative + exported
+      screenshots of the live app, not a URL.
+- [ ] **CI badge at the top of the README** — one line, and it finally feeds the `push: main`
+      trigger that until now had no consumer. Caveat to note: the badge shows "no status" without
+      repo access, which is fine for reviewers (they have read access) — worth a footnote so nobody
+      reads it as broken.
 
 **M7 — LLM bonus (Day 4 pm, only if M0–M6 solid)**
 - [ ] Enrichment from **temperament + description** (NOT bred_for — it's 100% null per profiling)
