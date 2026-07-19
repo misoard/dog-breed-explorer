@@ -118,13 +118,17 @@ too). **With more time:** the specified-but-unbuilt `mart_temperament_pair_lift`
 Heyra's take-home — making it public is Heyra's call, and the brief itself says "read access"). The
 discipline is a **meaningful incremental history** — one commit per milestone (M0 · M1 · M2…), not
 one giant final commit — with secrets kept out of the repo and a README another engineer could
-follow. I put a **ruleset on `main` requiring a PR + passing CI, force pushes blocked, admin bypass
-OFF** — so every change, including mine, goes branch → PR → CI → merge. The point: **a CI that can
-be ignored isn't one**; this is the cheapest possible demonstration of setting things up the way a
-*team* would need. **Traded off, honestly:** real ceremony for a solo developer (five steps where
-one used to do, and a stale-local-main papercut) — arguably over-process for a POC, but I'd still
-take it over a green badge that means nothing. **With more time:** a CODEOWNERS file, PR templates,
-and "require branches up to date" (the first thing I'd switch on for a second contributor).
+follow. **One deliberate deviation, flagged so it reads as chosen not overlooked:** I commit
+`dbt/profiles.yml`, which convention gitignores, because it carries only paths through `env_var()` —
+the secrets stay in the environment (`DOG_API_KEY` never appears there), so version-controlling the
+connection wiring is safe and makes the dev/prod split legible. I put a **ruleset on `main`
+requiring a PR + passing CI, force pushes blocked, admin bypass OFF** — so every change, including
+mine, goes branch → PR → CI → merge. The point: **a CI that can be ignored isn't one**; this is the
+cheapest possible demonstration of setting things up the way a *team* would need. **Traded off,
+honestly:** real ceremony for a solo developer (five steps where one used to do, and a
+stale-local-main papercut) — arguably over-process for a POC, but I'd still take it over a green
+badge that means nothing. **With more time:** a CODEOWNERS file, PR templates, and "require branches
+up to date" (the first thing I'd switch on for a second contributor).
 
 ## 5. CI / CD — GitHub Actions
 
