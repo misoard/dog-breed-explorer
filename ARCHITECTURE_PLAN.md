@@ -368,8 +368,9 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       **CI proves the pipeline; it does not serve it** (DECISIONS.md §5) — the run is a health check
       with a real API call attached, which is what catches the API changing shape or the key
       expiring. Not a deployment; say so out loud rather than letting it look like an oversight.
-      → **BUILT, not verified:** `.github/workflows/scheduled.yml` (cron `0 2 * * *` +
-      `workflow_dispatch`, so the cron can be exercised on demand instead of waiting until 02:00).
+      → **BUILT, not verified:** `.github/workflows/scheduled.yml` (cron `17 2 * * *` — ~02:17 UTC,
+      off the top of the hour to dodge the `:00` congestion that lags Actions cron by hours; DECISIONS §6 +
+      `workflow_dispatch`, so the cron can be exercised on demand instead of waiting until 02:17).
       No artifact upload — the warehouse dies with the VM, on purpose.
 - [x] **`DOG_API_KEY` as an Actions secret** — the cron 403s without it. Nothing else is secret.
       → **Confirmed by me (Mathieu) — NOT machine-verifiable from the repo.** This tick rests on my
@@ -544,14 +545,14 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       `duckdb.connect('md:dogs')` reader sees `dim_breeds` 627 / bridge 3538 / coverage 585·42 / giant
       58 / corr −0.67 — the published numbers, exactly; the Elementary report regenerated against
       `md:dogs` (`dogs.main_elementary`). No model SQL touched.
-- [ ] **Hosted dashboard URL — code ready + reader proven; deploy is user-driven.** `app.py` now reads
-      `md:dogs` when `DOGS_DB=md:dogs` is set (else the local file — the demo is unchanged); the
-      `DOGS_DB=md:dogs` cloud read was verified live (returns 585/42 from MotherDuck). What remains is
-      the click-ops only I can do outside the repo: deploy on **Streamlit Community Cloud** (free),
-      point it at the repo, set `MOTHERDUCK_TOKEN` + `DOGS_DB=md:dogs` as platform secrets. Then the URL
-      shows last night's cron refresh, no laptop — turning the brief's *"link or PDF"* delivery into an
-      actual **link**. Left unticked deliberately: same honesty as M5's triggers — a hosted URL is only
-      proven by a real deployment, which is mine to click, not the agent's to claim.
+- [x] **Hosted dashboard URL — DEPLOYED and live.** `app.py` reads `md:dogs` when `DOGS_DB=md:dogs`
+      is set (else the local file — the demo is unchanged). Deployed on **Streamlit Community Cloud**
+      (free) with `MOTHERDUCK_TOKEN` + `DOGS_DB=md:dogs` as platform secrets:
+      → **https://dog-breed-explorer-case-study.streamlit.app/** — serves last night's cron refresh
+      from MotherDuck, no laptop, turning the brief's *"link or PDF"* delivery into an actual **link**.
+      (First deploy 500'd until the secrets were set — the exact `DOGS_DB` unset → missing-local-file
+      fallback the seam predicts; adding the two secrets fixed it.) The token is a platform secret,
+      never in the repo or on the page.
       Full served stack: GitHub repo → Streamlit Cloud (runs app.py) → reads `md:dogs` → MotherDuck
       (gold + Elementary, refreshed 02:00 by the cron). Three free-tier services, two connection-string
       changes, zero model changes.
