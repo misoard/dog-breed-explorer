@@ -455,6 +455,27 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       repo access, which is fine for reviewers (they have read access) — worth a footnote so nobody
       reads it as broken.
       → **DONE** — badge at the top of the README, with the "no status without access" footnote.
+- [ ] **(optional) A per-breed "explorer" card** — turns the dashboard a step more towards its name:
+      an `st.selectbox` of breed names → that breed's size class, weight range, life-span range,
+      temperament tags, origin, description, and history. **Gold-plating, not gap-filling** (the brief
+      doesn't require it), but the single highest-ratio addition because the data model already
+      supports it. Decided design (not built):
+      - **Source: a new contracted `mart_breed_detail`** (1 row/breed, projected from `dim_breeds`),
+        read alongside `breed_temperaments` for the tags. Keeps `dim_breeds` internal/un-contracted
+        as designed (DECISIONS §3) rather than reading + contracting the whole 19-col dimension. A
+        detail card reading two marts (detail + bridge) is a **detail view**, the one documented
+        exception to DASHBOARD.md §0's "one panel = one mart" — two point-reads of one entity, not a
+        fact-computing join. Still thin (filter + render, no computed fact).
+      - **Un-drop `history`** in `stg_breeds` → `dim_breeds` (SPEC dropped it as "no analytical use —
+        keep only if a dashboard needs it"; this is that trigger). All three free-text fields are
+        100% populated and short (≤ ~500 chars).
+      - **Guardrail for the untrusted free text:** `assert_breed_text_clean` (**warn**) on the mart —
+        flags any `description`/`history` that is empty or contains HTML/markup/injection tokens
+        (`<…>`, `<script`, `javascript:`, `onclick`, `&entity;`). Green today (0 rows); fires if the
+        API starts sending markup or drops the field. Rendered with **no `unsafe_allow_html`** so
+        Streamlit escapes HTML regardless. If it ever fires, that's the cue to add a strip-tags pass.
+      - Cost: one staging tweak + one small contracted mart + one warn test (39 → ~40 tests) + ~30
+        lines in the app + the DASHBOARD/SPEC/DECISIONS notes.
 
 **M7 — LLM bonus (Day 4 pm, only if M0–M6 solid)**
 - [ ] Enrichment from **temperament + description** (NOT bred_for — it's 100% null per profiling)

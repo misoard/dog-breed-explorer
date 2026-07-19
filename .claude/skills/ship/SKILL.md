@@ -134,10 +134,14 @@ user clicks Create, watches CI, and merges.
 **After they merge, their local `main` is behind** — the merge happened on GitHub. Remind them:
 
 ```bash
-git switch main && git pull      # BEFORE starting the next milestone
+git switch main && git pull                # BEFORE starting the next milestone
+git branch -d <branch>                     # delete the merged branch locally (-d refuses if unmerged)
+git push origin --delete <branch>          # and on the remote (or the PR's "Delete branch" button)
 ```
 
-Skipping this forks the next branch off a stale base, which is the classic first-PR trap.
+Skipping the first line forks the next branch off a stale base, which is the classic first-PR trap.
+The branch deletes are cleanup: `-d` (not `-D`) is a safety net — it refuses if the branch isn't
+fully merged, so it can never drop unmerged work.
 
 ## 5. Push — never force without asking
 
