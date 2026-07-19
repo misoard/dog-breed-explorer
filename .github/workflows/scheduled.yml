@@ -24,10 +24,13 @@ name: Scheduled pipeline
 
 on:
   schedule:
-    # 02:00 UTC daily. Actions cron is best-effort and can lag under load — fine
-    # for a health check on a source that changes ~never. One daily job is also
-    # the entire reason there's no Airflow here (DECISIONS.md §6).
-    - cron: '0 2 * * *'
+    # ~02:17 UTC daily. Deliberately :17, NOT :00 — Actions cron is best-effort and
+    # the top of the hour is the most congested slot, so `0 2` routinely lags by
+    # hours; scheduling off the hour pulls the delay down to minutes. It's still
+    # best-effort (not an SLA), which is fine for a health check on a source that
+    # changes ~never — a few hours' lag is immaterial (DECISIONS.md §6). One daily
+    # job is also the entire reason there's no Airflow here.
+    - cron: '17 2 * * *'
   # So the cron can be exercised on demand instead of waiting until 02:00 —
   # otherwise the only way to test a change to it is to wait a day.
   workflow_dispatch:

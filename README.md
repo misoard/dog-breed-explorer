@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/misoard/dog-breed-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/misoard/dog-breed-explorer/actions/workflows/ci.yml)
 
+**🔗 Live dashboard:** **https://dog-breed-explorer-case-study.streamlit.app/** — served from MotherDuck (hosted DuckDB), refreshed nightly by the 02:00 cron. No laptop involved.
+
 A right-sized daily data pipeline and a thin analytics dashboard over [TheDogAPI](https://thedogapi.com)'s
 **627 dog breeds**. Bronze → silver → gold in **DuckDB + dbt**, scheduled by **GitHub Actions**, read
 by a **Streamlit** dashboard. It runs end to end on a laptop off a single DuckDB file — the deliberate
@@ -69,10 +71,11 @@ local file, or MotherDuck — with no change to a line of model SQL.
         one env var (DBT_DUCKDB_PATH) selects where GOLD + observability are written:
           • local  ./dogs.duckdb        ← laptop demo build, and CI PR builds (ephemeral)
           • cloud  md:dogs  (MotherDuck) ← the 02:00 cron; DURABLE, accumulates night over night
-                                     │                          the dashboard reads gold:
+                                     │                     the Streamlit APP reads gold:
                                      ▼                            • locally → ./dogs.duckdb
-                          gold + observability                    • hosted  → md:dogs  (next step)
+                          gold + observability                    • hosted  → md:dogs  (LIVE)
   The cron writes MotherDuck; CI PR builds stay local, so a PR never clobbers served data.
+  (The observability REPORT reads the separate main_elementary tables, not gold. See below.)
 ```
 
 | Layer | Choice | Why (one line) |
@@ -103,7 +106,8 @@ deliberate act. The `md:` path just swaps the connection string — same SQL, sa
 
 ## The dashboard — what the data says
 
-*(A live Streamlit app; the charts below are exported from it.)*
+*(The **[live app](https://dog-breed-explorer-case-study.streamlit.app/)** is interactive and reads
+MotherDuck; the charts below are static exports from it.)*
 
 ### 1. How are breeds distributed across weight classes?
 
@@ -222,7 +226,8 @@ DOGS_DB=md:dogs streamlit run dashboard/app.py        # dashboard reads the clou
 ./scripts/observability_report.sh md:dogs             # observability report from the cloud
 ```
 
-<!-- HOSTED LINK: added here once the Streamlit Community Cloud deploy is live. -->
+**Live at → https://dog-breed-explorer-case-study.streamlit.app/** (reads `md:dogs` from MotherDuck;
+the token is a Streamlit platform secret, never in the repo or the page).
 
 ---
 

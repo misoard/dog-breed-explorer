@@ -150,17 +150,26 @@ only the output **path** moved (a file → an `md:` connection string), no model
 
 ## 6. Orchestration & scheduling — GitHub Actions cron (not Airflow)
 
-**Chose** the cron scheduler built into GitHub Actions, **daily at 02:00 UTC**, over Airflow /
-Dagster / Prefect. This is **one daily job**: standing up a managed orchestrator for a single
+**Chose** the cron scheduler built into GitHub Actions, **daily around 02:00 UTC** (scheduled at
+`17 2 * * *`, deliberately **off the top of the hour**: Actions cron is best-effort and `:00` is the
+most congested minute, so `0 2` routinely lags by hours while `:17` pulls the typical delay down to
+minutes — still not an SLA, but a near-static source doesn't need one), over Airflow / Dagster /
+Prefect. This is **one daily job**: standing up a managed orchestrator for a single
 scheduled task is operational overhead I can't justify. Actions cron runs it reliably and unattended.
-**Whether the last run passed or failed is answered at two levels:** the run status (green/red + logs,
-and the README badge) at a glance, and — durably, with history — the observability layer (§5), which
-records *which* test failed and *for how long*, not just that something did (`loaded_at` on the curated
-data shows freshness alongside) — though nothing yet *pushes* a failure, you have to look. **With more
-time:** an **alert channel** (Elementary's `edr monitor` posts a failing test to Slack; an
-`if: failure()` step catches a run that crashes outright — the brief's "tests wired to an alert
-channel"), and Dagster only if the DAG outgrew a handful of steps or needed richer backfills — not
-before, and the difference is the whole point.
+**Whether the last run passed or failed is answered at two levels.** At a glance: the run status
+(green/red + logs, and the README badge). Durably and with history: an **observability layer** built on
+the **Elementary** dbt package (the one allowed dependency, §3). Its automatic on-run-end hook records
+every test/run result — status, timing, the warn/error split for all 39 tests — into `main_elementary`
+tables, and **one command renders a health report** from them: `./scripts/observability_report.sh`
+reads the **local** `dogs_dev.duckdb` (my own builds), while `./scripts/observability_report.sh md:dogs`
+reads **MotherDuck** — the cron's cloud data — so I can check whether last night's scheduled pipeline
+went green and watch trends accumulate night over night (`raw.breeds` and the Elementary tables both
+persist there, §1/§2). It shows *which* test failed and *for how long*, not just that something did
+(`loaded_at` shows data freshness alongside). The one gap: nothing yet *pushes* a failure, you have to
+look. **With more time:** an **alert channel** (Elementary's `edr monitor` posts a failing test to
+Slack; an `if: failure()` step catches a run that crashes outright — the brief's "tests wired to an
+alert channel"), and Dagster only if the DAG outgrew a handful of steps or needed richer backfills —
+not before, and the difference is the whole point.
 
 ## 7. Dashboard & visualization — Streamlit, thin, spec-first
 
@@ -183,9 +192,14 @@ the two are 0.86-coupled). The visualization rules are **honesty rules**: never 
 (two y-scales fabricate a relationship — stack two charts on one x-axis instead), a heatmap not a
 radar (no axis-order artifact), the ±1σ band ships *with* every mean, and **every chart prints its
 own population** — coverage is *uneven* (toy 29/40 vs giant 58/58), so a bare "627" beside a plot
-drawn from 585 would quietly lie. **Traded off:** a deliberately un-clever native
-app (no bespoke CSS) that reads plain but stays thin and stable (the hosted URL that was the other
-tradeoff here is now code-ready and cloud-verified, with only the Streamlit-Cloud deploy click left). **Cut, recorded not built:** the
+drawn from 585 would quietly lie. **Delivery — I went live** rather than stop at PDF/screenshots:
+the app is deployed on **Streamlit Community Cloud** reading gold from **MotherDuck** (the same cloud
+store the cron refreshes on a green run), so the deliverable is an actual **link** —
+**https://dog-breed-explorer-case-study.streamlit.app/**. One env var does it: `app.py` reads `md:dogs`
+when `DOGS_DB=md:dogs` is set (hosted) and the local `dogs.duckdb` otherwise (the local demo,
+unchanged), with no model change and the token kept as a platform secret, never in the repo or on the
+page. **Traded off:** a deliberately un-clever native app (no bespoke CSS) that reads plain but stays
+thin and stable. **Cut, recorded not built:** the
 `weight ~ height²·⁰⁷` isometry finding and a trait-pair lift analysis — an exponent is *not a fact
 about a dog*, which is the line I hold (**descriptive facts about breeds → gold; inferential
 cleverness → the reasoning record**). **With more time:** the LLM enrichment bonus below and the
@@ -195,29 +209,13 @@ breed cards (last optional item of milestone 6).
 
 ## What I'd build next given another week
 
-**The keystone — durable storage — is now in place, and it already delivered most of what depended on
-it.** Several items below shared that one prerequisite. The POC is stateless in its processing (§1) and
-CI stays that way — right for near-static breed data — but the cron now persists to **MotherDuck**:
-hosted DuckDB, so **zero SQL change**, just a connection string (`md:dogs`) in place of the local
-`.duckdb`. (S3 or a Release asset also work; **GitHub artifacts don't** — retention-capped, meant for
-build outputs, not a store you'd trust.) The cost is **operational, not financial**: a 2 MB database
-sits inside MotherDuck's free tier for one daily job — what it adds is a credential and a moving part
-the POC didn't need. So the items below split into what that unlocked (**done**) and what remains:
+**The keystone — durable storage — is now in place:** the cron persists to **MotherDuck** (hosted
+DuckDB, **zero SQL change**, just a connection string `md:dogs` in place of the local `.duckdb` — §2/§5),
+which is what already made the **observability trend view** (§6) and the **hosted dashboard** (§7) real.
+(S3 or a Release asset would also work; **GitHub artifacts wouldn't** — retention-capped, meant for
+build outputs, not a store you'd trust. The cost is **operational, not financial**: a 2 MB database
+sits inside MotherDuck's free tier for one daily job.) With that in hand, the genuinely-future items:
 
-- **Observability — done.** The mirror image of statelessness: you cannot reconstruct "what failed
-  last Tuesday" from the API, so run history is **append-only, non-reproducible state** — an audit
-  layer that persists metadata *about* runs, never breed data, so it doesn't contradict §1. Rather
-  than hand-roll it, I added the **Elementary** dbt package: an automatic on-run-end hook parses
-  `run_results.json` into durable `main_elementary` tables (status, timing, the warn/error split for
-  all 39 tests) and the `edr` CLI renders a health report. Same instinct as reaching for dbt_utils in
-  production — observability is infra, not test logic (§3). Point-in-time health was always
-  stateless-doable (`annotate_warns.py` + the report); the **trend** — "is the null rate creeping over
-  a week?" — needed yesterday, and the cron writing to MotherDuck supplies it: the *same* tables
-  accumulate night over night with zero further change (verified the cloud run appends 39 test-results
-  per invocation), so the history view fills in after a few nights. Exactly the day-over-day view
-  `assert_no_breed_lost` can't have locally (§3). **Still unbuilt:** wiring it to an **alert channel**
-  (Slack/email) so a failing test or a red cron *pushes* rather than waiting on the Actions page — the
-  "tests wired to an alert channel" the brief names.
 - **Change history → the scaling path.** dbt **snapshots (SCD-2)** in `snapshots/` (`strategy='check'`
   since the API gives no `updated_at` — it compares column values to detect change, the analytics-side
   equivalent of CDC). A row is versioned only when a breed actually changes — the "what did this breed
@@ -236,16 +234,10 @@ the POC didn't need. So the items below split into what that unlocked (**done**)
   LLM tokens (dominant, controlled by the cache), then hosted storage/compute (cents), then Actions
   minutes (free tier). Everything non-LLM stays negligible; the whole cost question is "how often do I
   re-run the model," and history is the lever.
-- **Hosted serving — done.** `app.py` reads the same MotherDuck store when `DOGS_DB=md:dogs` is set
-  (else the local file — the demo is unchanged), verified live returning the published coverage numbers
-  from the cloud. This turns the pipeline from *proving* to *serving* with no model change and resolves
-  the §5 handoff. The only step left is click-ops outside the repo — deploying on Streamlit Community
-  Cloud with the token as a platform secret — which makes the delivery an actual **link** rather than a
-  PDF.
 
 Then the two that don't depend on storage:
-- **IaC:** Terraform the repo ruleset, Actions secrets, and (once hosted) the storage, so the whole
-  stack is reproducible from the repo rather than from three settings pages I clicked once.
+- **IaC:** Terraform the repo ruleset, Actions secrets, and the MotherDuck storage, so the whole
+  stack is reproducible from the repo rather than from the settings pages I clicked once.
 - **LLM enrichment (the bonus feature itself):** `energy_level` / `good_with_kids` from temperament +
   description via **Pattern A** — `enrich.py` reads `stg_breeds`, calls the LLM, writes
   `raw.breed_enrichment`, and `dim_breeds` **LEFT JOIN**s it via `source()`, so dbt never makes a
