@@ -184,7 +184,12 @@ models:
         description: From dim_breeds via the join; its domain is guarded there.
       - name: temperament
         data_type: varchar
-        description: From the bridge, where the column cannot be null.
+        description: The lowercased KEY. Group / join / filter on this.
+      - name: temperament_display
+        data_type: varchar
+        description: >
+          Sentence-cased LABEL, 1:1 with temperament. The dashboard RENDERS this; it never groups
+          or sorts on it (order comes from the seed's sort_order, keyed to the lowercase temperament).
       - name: breed_count
         data_type: bigint
       - name: breeds_in_class

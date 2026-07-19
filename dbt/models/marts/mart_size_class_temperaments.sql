@@ -37,16 +37,22 @@ with class_sizes as (
     select
         d.size_class,
         t.temperament,
+        -- carry the sentence-cased LABEL through 1:1 with the key, so the dashboard can render it
+        -- without title-casing in the app (presentation lives in gold). Safe in the GROUP BY because
+        -- temperament_display is functionally determined by temperament (verified 1:1); grouping on
+        -- the KEY is what the "never group on temperament_display alone" note in SPEC guards against.
+        t.temperament_display,
         count(distinct t.breed_id) as breed_count
     from {{ ref('breed_temperaments') }} t
     join {{ ref('dim_breeds') }} d on d.breed_id = t.breed_id
-    group by d.size_class, t.temperament
+    group by d.size_class, t.temperament, t.temperament_display
 
 )
 
 select
     t.size_class,
     t.temperament,
+    t.temperament_display,
     t.breed_count,
     c.breeds_in_class,
     round(100.0 * t.breed_count / c.breeds_in_class, 1) as pct_of_class
