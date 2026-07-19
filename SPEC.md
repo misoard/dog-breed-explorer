@@ -31,7 +31,7 @@ Business logic lives in dbt gold; the dashboard stays thin.
 | gold | `mart_size_class_temperaments` | dbt | grain: (size_class, temperament) — count + % within class |
 | gold | `mart_data_coverage` | dbt | one row — what each chart drops (627 total, 585 plotted) |
 | seed | `size_class_bands` | dbt seed | the ONLY home of the bucket boundaries |
-| seed | `dashboard_temperament_tags` | dbt seed | **config for the dashboard heatmap** (M6): curated tag list + `sort_order`. NOT a data grid — carries no `pct_of_class`; the cut stays in the read layer. `mart_size_class_temperaments` is **unchanged** |
+| seed | `dashboard_temperament_tags` | dbt seed | **config for the dashboard heatmap** (M6): curated tag list + `sort_order`. NOT a data grid — carries no `pct_of_class`; the cut stays in the read layer. The seed leaves `mart_size_class_temperaments` **unchanged** (the mart later gained a `temperament_display` render label, M6, unrelated to the seed) |
 
 ## Materialization & schemas
 
@@ -271,7 +271,7 @@ Raw holds 628; `dim_breeds` holds **627**. Every count below is post-dedupe.
 |---|---|---|
 | breed_id | INTEGER | FK → dim_breeds |
 | temperament | VARCHAR | **lowercased + trimmed** tag (group on this) |
-| temperament_display | VARCHAR | sentence-cased for the dashboard. **Never group on this** |
+| temperament_display | VARCHAR | sentence-cased LABEL for the dashboard. **Never group on this *as the key*** (casing could split a tag); carrying it 1:1 *alongside* the lowercase key into a mart for rendering is the intended use — `mart_size_class_temperaments` does exactly that (M6) |
 
 Built by splitting `temperament_raw` on ',', trimming, lowercasing. **Verified: 3,538 rows · 45
 distinct tags · 626 of 627 breeds · 5.6 tags/breed.**
@@ -593,7 +593,10 @@ on `size_class` is drift waiting to happen.
   aggregate). The number quoted in the narrative is computed by dbt, tested and reproducible —
   not a `df.corr()` in the dashboard.
 - **`mart_size_class_temperaments`** — grain: **(size_class, temperament)**.
-  `size_class, temperament, breed_count, breeds_in_class, pct_of_class`.
+  `size_class, temperament, temperament_display, breed_count, breeds_in_class, pct_of_class`.
+  **`temperament_display` (M6):** the sentence-cased label carried 1:1 from the bridge, so the heatmap
+  RENDERS it without title-casing in the app (presentation lives in gold). The lowercase `temperament`
+  stays the key for filter/join/sort; the label is display-only.
   For each size class, how often each temperament tag appears. "Characteristic" here means nothing
   cleverer than **most frequent within the group** — a `GROUP BY size_class, temperament` with a
   `COUNT`, joining two tables that already exist (`ref('breed_temperaments')` → `ref('dim_breeds')`).

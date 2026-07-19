@@ -52,7 +52,7 @@ never triggers the pipeline; it reads whatever gold currently holds.
 | — | longest-lived top-5 (below the scatter) | `mart_size_vs_lifespan` | filter/sort of the *same* mart; shows each breed's **published range** (min–max) |
 | C1 | mean life span ± 1σ, per class | `mart_size_class_summary` | mean line + `stddev_life_span_years`; y zoomed ±10%, band-aware so the σ bars aren't clipped |
 | C3 | why weight, not height (closes C) | `mart_metric_correlation` | 3 rows + explanation — justifies the weight x-axis |
-| D | temperament heatmap | `mart_size_class_temperaments` (unchanged) | curated tags (seed `dashboard_temperament_tags`) × 5 classes, colour = `pct_of_class` |
+| D | temperament heatmap | `mart_size_class_temperaments` (+ `temperament_display` label) | curated tags (seed `dashboard_temperament_tags`) × 5 classes, colour = `pct_of_class`, y = the label |
 
 **Order within section C is scatter → mean line → correlation** (raw breeds first, then the summary,
 then the axis justification), decided in M6 — not the line-first order this spec was first drafted in.
@@ -288,7 +288,9 @@ per-class summary, then the axis justification. (Drafted line-first; **reordered
 - **Chart:** a **heatmap** (Altair `mark_rect` on the mart's long rows — no pivot, no reshape into
   wide in the app):
   - **x** = `size_class`, sorted toy → small → medium → large → giant.
-  - **y** = `temperament`, sorted by the seed's `sort_order`.
+  - **y** = **`temperament_display`** (the sentence-cased label, carried 1:1 in the mart), **sorted by
+    the seed's `sort_order`** — which is keyed to the lowercase `temperament`, so the app filters and
+    orders on the *key* and renders the *label* (a key→label map, no title-casing in the app).
   - **colour** = `pct_of_class`, the sequential ramp §4 fixes (dark = higher).
 - **Why a heatmap and NOT the radars this spec first proposed** — the reason is the one this project
   already enforces for the count/life-span pair. A radar's stated finding ("the shape *rotates* as

@@ -270,9 +270,13 @@ st.divider()
 # --- D · how does temperament shift with size? (heatmap) ---------------------------------------
 st.header("How does temperament shift with size?")
 tags = seed_tags()
-temp = q("select size_class, temperament, breed_count, breeds_in_class, pct_of_class "
+temp = q("select size_class, temperament, temperament_display, breed_count, breeds_in_class, pct_of_class "
          "from main_marts.mart_size_class_temperaments")
 temp = temp[temp["temperament"].isin(tags) & (temp["size_class"] != "unknown")]
+# Group / filter / sort on the lowercase KEY; RENDER the sentence-cased LABEL (both come from gold —
+# no title-casing in the app). The seed's sort_order is keyed to the lowercase temperament, so build
+# a key→label map and order the labels by that key order.
+label = dict(zip(temp["temperament"], temp["temperament_display"]))
 # Reindex onto the full 5×5 grid so absent (tag,class) pairs draw as an explicit 0% cell rather
 # than a hole. This is presentation reshaping (a 0 read from absence), not a computed fact.
 grid = pd.MultiIndex.from_product([tags, CLASS_ORDER], names=["temperament", "size_class"]).to_frame(index=False)
@@ -281,17 +285,19 @@ temp = grid.merge(temp, on=["temperament", "size_class"], how="left")
 temp["pct_of_class"] = temp["pct_of_class"].fillna(0.0)
 temp["breed_count"] = temp["breed_count"].fillna(0).astype(int)
 temp["breeds_in_class"] = temp["size_class"].map(class_n).astype(int)
+temp["temperament_display"] = temp["temperament"].map(label)   # fill the label on the reindexed rows
+label_order = [label[t] for t in tags]                          # labels in the seed's sort_order
 HEAT_H = 260
 heat = (
     alt.Chart(temp)
     .mark_rect()
     .encode(
         x=alt.X("size_class:N", sort=CLASS_ORDER, title="weight class", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("temperament:N", sort=tags, title=None),
+        y=alt.Y("temperament_display:N", sort=label_order, title=None),
         color=alt.Color("pct_of_class:Q", scale=alt.Scale(scheme="blues", domain=[0, 100]),
                         # top-align the colour bar with the top of the heatmap: span it the full plot height
                         legend=alt.Legend(title="% of class", gradientLength=HEAT_H, titleOrient="top")),
-        tooltip=[alt.Tooltip("temperament:N", title="trait"),
+        tooltip=[alt.Tooltip("temperament_display:N", title="trait"),
                  alt.Tooltip("size_class:N", title="class"),
                  alt.Tooltip("pct_of_class:Q", title="% of class", format=".0f"),
                  alt.Tooltip("breed_count:Q", title="breeds"),
