@@ -493,7 +493,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       (`accepted_values` on the enum — LLM output is untrusted input — plus a few hand-labels).
 
 **M8 — Polish & submit (Day 5, ≥24h before Wed 11am → submit by Tue 11am)**
-- [ ] Finish DECISIONS.md incl. "what I'd do next".
+- [x] Finish DECISIONS.md incl. "what I'd do next".
 - [ ] Rehearse: walk any dbt model, explain `ref()` + the lineage graph, one decision I'm proud of + one I'd change.
 - [ ] Submit repo link with read access.
 

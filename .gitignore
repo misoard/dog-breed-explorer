@@ -24,5 +24,9 @@ Heyra_Data_Engineer_Case.pdf
 # My personal prep/memory aid — debrief rehearsal notes, not a project deliverable.
 RECAP_NOTES.md
 
+# The full reasoning long-form — the working draft every decision is argued out in.
+# DECISIONS.md is the one-page deliverable curated FROM this; the draft stays local.
+decisions_draft.md
+
 # Personal dbt study guide (LaTeX + PDF) — local only, not a project deliverable
 dbt_course/
