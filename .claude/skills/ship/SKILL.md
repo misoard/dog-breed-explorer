@@ -82,15 +82,24 @@ git push -u origin <branch>     # -u sets upstream so later pushes are a bare `g
 - A new branch has **no remote counterpart, so there is no divergence and never a force push** —
   the rejected-push problem below only ever applies to a rewritten `main`.
 
-**Then hand the user a PR link with the title and body already drafted.**
+**Then hand the user a PR link with the title and body already drafted — via `scripts/pr_url.py`,
+ALWAYS. This is the required deliverable, not optional.**
 
 GitHub's compare URL accepts `title` and `body` as query params, so the form opens pre-filled and
-the user only reviews and clicks **Create**. Build it with `scripts/pr_url.py` (URL-encodes and
-prints the link):
+the user only reviews and clicks **Create**. That single pre-filled link is the whole point of the
+ship, and the reason `scripts/pr_url.py` exists (it URL-encodes the body correctly, which is fiddly
+to do by hand). Build it with:
 
 ```bash
 .venv/bin/python scripts/pr_url.py --branch <branch> --title "<title>" --body-file <file>
 ```
+
+- **The output is the pre-filled URL the script prints. Give the user THAT.** Do NOT substitute a
+  bare `compare/…?expand=1` link, and do NOT hand over the title/body as a copy-paste block *instead*
+  of the link — that defeats the script and the one-click flow it exists to provide.
+- **Only** if the user says the pre-filled link failed to populate (a very long body can exceed a
+  URL length limit in some browsers) do you *add* the raw title + body as a copy-paste fallback —
+  **in addition to** the `pr_url.py` link, never in place of it.
 
 > **NEVER use an em-dash (—) in the PR title or body.** Not once. Rewrite the sentence instead:
 > use a colon, a full stop, or split it in two. This is a hard rule, not a preference to weigh

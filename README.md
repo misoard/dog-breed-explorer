@@ -158,8 +158,10 @@ dog-breed-explorer/
 
 ## Testing & CI
 
-- **39 dbt tests** (schema + custom), each verified capable of failing; **contracts** on the 6 marts
-  the dashboard reads. Details in [`SPEC.md`](SPEC.md).
+- **39 dbt tests**, split by role: **18 error** (hard invariants), **6 warn** (drift / source-change
+  signals, surfaced but non-fatal), **8 regression guards** (can't fail today, each guards a plausible
+  refactor), **7 seed-integrity** (the CSV seeds tested like data). Each verified capable of failing;
+  **contracts** on the 6 marts the dashboard reads. Full breakdown in [`SPEC.md`](SPEC.md).
 - **On every pull request**, GitHub Actions runs the whole pipeline **from an empty warehouse**
   (ingest → `dbt build` → tests) and reports green/red — the badge at the top.
 - **A daily cron @ 02:00 UTC** re-runs it against the live API as a health check, then discards its
