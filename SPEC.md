@@ -393,14 +393,26 @@ artifact, not two breeds.
 
 ### The suite is classified — 39 tests, and every one can fail
 
-**Audited at M4's close and cut from 68 to 35** (M6 then added the **4 `dashboard_temperament_tags`
-seed guards** — `unique`×2, `not_null`, and the WARN `relationships` — → **39**; they're the seed
-guards in the REGRESSION table below, same shape as the `size_class_bands` ones). The question asked
-of each test was not "is it nice to have?" but **"what mutation makes it fail, and would something
-else catch that first?"**
-A test that cannot fail is not coverage — it is a claim of coverage, which is worse, because it is
-the one you trust when it matters. The same argument as a dropped test, a permanent warn, and a
-guard reporting green about the nine numbers it watches. Three categories, and every test is in one:
+**Audited at M4's close and cut from 68 to 35**; M6 then added the **4 `dashboard_temperament_tags`
+seed guards** (`unique`×2, `not_null`, and the WARN `relationships`) → **39**. The question asked of
+each test was not "is it nice to have?" but **"what mutation makes it fail, and would something else
+catch that first?"** A test that cannot fail is not coverage — it is a *claim* of coverage, which is
+worse, because it is the one you trust when it matters.
+
+**The 39 live tests, split four ways by role — `18 error · 6 warn · 8 regression guard · 7 seed
+integrity`:**
+
+| role | n | what it is |
+|---|---|---|
+| **error** | **18** | hard invariants — logically broken data must not ship (min > max, a surviving sentinel, a lost breed, a crossed grain, a seed band gap, a casing split). The 13 custom `assert_*`, plus the generics that can genuinely fire: the source-boundary PK `not_null`s (a payload with no `id`/`name` is possible), the breed-name `unique` that caught the Caucasian duplicate, and `not_null(mart_metric_correlation.correlation)` (`corr` → NULL when n < 2). |
+| **warn** | **6** | drift / source-change signals — a run that *looks* off but isn't broken: `assert_metric_shape_known`, `assert_source_tag_not_duplicated`, `assert_tag_not_freetext`, `assert_unknown_bucket_small`, `assert_lifespan_null_rate_stable`, and the seed→bridge `relationships`. Surfaced by `annotate_warns.py`, never fatal. |
+| **regression guard** | **8** | can't fail on today's code; each names a plausible refactor it *would* catch (scalar-subquery → JOIN fan-out, a mart gaining a JOIN, a `WHERE` orphaning the bridge, a 6th `size_class`). Grain / PK / domain guards on `stg_breeds`, `dim_breeds`, `mart_size_vs_lifespan`. |
+| **seed integrity** | **7** | the two seed CSVs tested like data (a blank cell IS a null, a copy-paste IS a dup): `unique`/`not_null` on `size_class_bands` (4) + `dashboard_temperament_tags` (3). |
+
+**18 + 6 + 8 + 7 = 39.** Severity lines up: the 33 `error`-severity tests are error (18) + regression
+guard (8) + seed integrity (7); the 6 `warn`-severity are the warn bucket. The three deeper categories
+below (LOAD-BEARING / REGRESSION / CUT) are the M4 audit's framing; the table above is the by-role view
+of the live suite. Every live test is in exactly one:
 
 #### 1. LOAD-BEARING (18) — the spine. Each catches something nothing else does.
 
@@ -683,11 +695,19 @@ dual-axis plot.** Two y-scales align arbitrarily and fabricate a relationship. S
 **Cut from the dashboard:** the height-vs-weight scatter and its fitted isometry curve. See the
 `mart_size_scaling_fit` note above — a regression exponent is not a fact about a dog breed.
 
-## LLM bonus (if fundamentals solid) — REVISED given profiling
-`bred_for` is empty, so derive instead: an **`energy_level`** (low/medium/high) or
-**`good_with_kids`** flag from `temperament_raw` + `description` + `breed_group`. Batch all 628 in
-one pass per run, cache by breed_id so unchanged breeds aren't re-called, and eval on a handful of
-hand-labelled breeds + a schema/enum validity check. Fold back as a real column in dim_breeds.
+## LLM bonus (if fundamentals solid) — the engineering, not the feature
+
+**The specific enriched attribute is not fixed** — that's a build-time call about what's actually
+worth adding. The natural shape: turn the free-text fields (`temperament_raw` + `description` +
+`breed_group`) into one **structured, validated attribute**, folded back as a real column in
+`dim_breeds`. (**Not** `bred_for` — profiling found it 100% null, so there is nothing to enrich from
+there.) Whatever the attribute, it is treated as an **engineering component, not magic**: batch all
+628 in one pass per run, **cache by `breed_id`** so unchanged breeds aren't re-called, record cost +
+latency, and **evaluate** it — a schema / enum validity check on the (untrusted) LLM output plus a
+spot-check against a few hand-labels.
+
+The interesting part is not *which* attribute it computes but **where the LLM call sits in the
+pipeline** — the structural decision below.
 
 ### How enrichment joins the DAG — **Pattern A: enrich writes a table, dbt reads it**
 
