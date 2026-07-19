@@ -109,6 +109,10 @@ deliberate act. The `md:` path just swaps the connection string — same SQL, sa
 *(The **[live app](https://dog-breed-explorer-case-study.streamlit.app/)** is interactive and reads
 MotherDuck; the charts below are static exports from it.)*
 
+> **Where each chart's data comes from** — every number below is read from a gold mart, computed at
+> pipeline time, never in the app. The full chart → mart → column lineage is in
+> **[Dashboard data lineage](docs/dashboard_data_lineage.md)**.
+
 ### 1. How are breeds distributed across weight classes?
 
 ![Breeds per weight class](docs/img/01_distribution.png)
