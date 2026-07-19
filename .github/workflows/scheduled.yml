@@ -6,11 +6,15 @@
 # REAL API CALL. It is what catches the API changing shape, the key expiring, or a
 # distributional guard starting to fire, on a day when nobody is looking.
 #
-# It is a HEALTH CHECK, NOT A DEPLOYMENT, and that is a deliberate call, not an
-# oversight (DECISIONS.md §5): the run builds gold, tests it, goes green, and
-# throws its warehouse away. Serving was never its job — the laptop's prod build
-# is what the dashboard reads. Since every run rebuilds from the API anyway
-# (§1, stateless), a run's warehouse holds nothing worth persisting.
+# It is a health check that ALSO SERVES (M9 Part B). Until Part B this cron threw
+# its warehouse away (§5 — CI proves, laptop serves); now it builds into MotherDuck
+# (DBT_DUCKDB_PATH=md:dogs), so the same run that proves the pipeline also refreshes
+# the durable store the hosted dashboard reads. This is the ONE workflow that writes
+# cloud: ci.yml (PRs) still builds a throwaway LOCAL warehouse and never needs the
+# token, so a PR can never clobber last night's served gold. What made this a
+# one-line change: the pipeline still rebuilds from the API (§1, stateless) — only
+# the OUTPUT path moved from a discarded file to a persistent connection string, so
+# gold + Elementary's run-history tables now accumulate night over night for free.
 #
 # Kept as its own workflow, not a second trigger on ci.yml, so this red is
 # distinguishable from a broken PR at a glance. They fail for different reasons
@@ -38,8 +42,12 @@ jobs:
     timeout-minutes: 15
 
     env:
-      # One env var, two programs. See ci.yml / SPEC.md "dbt targets".
-      DBT_DUCKDB_PATH: ${{ github.workspace }}/dogs.duckdb
+      # One env var, two programs. See ci.yml / SPEC.md "dbt targets". Unlike ci.yml,
+      # this points at MotherDuck: the same run_pipeline.sh routes an md: path to the
+      # cloud store instead of a local file (M9 Part B). ingest.py writes raw there,
+      # dbt builds gold + Elementary there, and it persists past the VM — the durable
+      # store the hosted dashboard reads.
+      DBT_DUCKDB_PATH: md:dogs
       DBT_TARGET: prod
 
     steps:
@@ -58,6 +66,11 @@ jobs:
           # Without this the cron 403s every night. Repo Settings > Secrets and
           # variables > Actions > New repository secret.
           DOG_API_KEY: ${{ secrets.DOG_API_KEY }}
+          # M9 Part B: the cron writes to md:dogs, so it needs the MotherDuck token
+          # (same secrets mechanism as DOG_API_KEY). ci.yml does NOT set this — its
+          # local build never touches the cloud. DuckDB reads MOTHERDUCK_TOKEN from
+          # the environment automatically when it opens an md: connection.
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: ./scripts/run_pipeline.sh
 
       # The distributional guards (warn) are the reason this cron is worth having:
@@ -67,8 +80,10 @@ jobs:
         if: always()
         run: python scripts/annotate_warns.py
 
-      # No artifact upload, no persistence: the warehouse dies with the VM, on
-      # purpose. See the header, and DECISIONS.md §5.
+      # No artifact upload needed: persistence is the POINT now, but it lives in
+      # MotherDuck (written during the build), not in a GitHub artifact. The VM is
+      # still discarded — it was only ever the compute; the store is remote. See the
+      # header, and DECISIONS.md §5 (Part B updated the serving half).
       #
       # KNOWN GAP (stated, not hidden): a failed scheduled run is only visible on
       # the Actions page — nothing pushes it to me. A red cron nobody sees is a

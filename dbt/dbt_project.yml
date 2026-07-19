@@ -62,3 +62,13 @@ models:
     marts:
       +materialized: table
       +schema: marts
+
+  # M9 — Elementary observability (see packages.yml for why this one package is allowed).
+  # Its models land in their OWN schema (main_elementary) and manage their OWN
+  # materializations (mostly incremental tables it appends run results to). This block is
+  # namespaced under `elementary:`, so the per-layer view/table config above — scoped to
+  # `dog_breed_explorer:` — never touches it, and its config never touches ours. Elementary
+  # captures every test result into these tables via an automatic on-run-end hook; nothing
+  # here adds to our 39 data tests.
+  elementary:
+    +schema: "elementary"

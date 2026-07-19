@@ -15,6 +15,7 @@ Layout is a single top-to-bottom narrative (DASHBOARD.md §2), not per-question:
 Run from the repo root:  streamlit run dashboard/app.py
 """
 
+import os
 from pathlib import Path
 
 import altair as alt
@@ -24,7 +25,12 @@ import streamlit as st
 
 # --- paths & constants -------------------------------------------------------------------------
 REPO = Path(__file__).resolve().parent.parent
-DB_PATH = REPO / "dogs.duckdb"                                   # the prod build the dashboard reads
+# Reads the local prod build by default — the live demo (DECISIONS §5). On Streamlit
+# Community Cloud (M9 Part B) set DOGS_DB=md:dogs + MOTHERDUCK_TOKEN as platform secrets
+# and it reads last night's cron refresh from MotherDuck instead: same SQL, same marts,
+# one env var. Locally nothing is set, so the demo keeps reading the file — no drift.
+DB_PATH = os.environ.get("DOGS_DB") or str(REPO / "dogs.duckdb")  # local file, or "md:dogs"
+IS_MOTHERDUCK = DB_PATH.startswith("md:")
 SEED_PATH = REPO / "dbt" / "seeds" / "dashboard_temperament_tags.csv"  # the curated heatmap tags (config)
 
 # Size-class order is single-sourced from the size_class_bands seed the model bands off: sort by the
@@ -54,7 +60,10 @@ METRIC_LABEL = {"weight_mid_kg": "weight", "height_mid_cm": "height", "life_span
 # --- data access (cached; the app never writes, never triggers the pipeline) -------------------
 @st.cache_data
 def q(sql: str) -> pd.DataFrame:
-    con = duckdb.connect(str(DB_PATH), read_only=True)
+    # read_only is a safety belt on the local file (the app never writes). MotherDuck
+    # opens read/write only; the app still issues nothing but SELECTs, so it's read-only
+    # in behaviour either way. DuckDB reads MOTHERDUCK_TOKEN from the env for an md: path.
+    con = duckdb.connect(DB_PATH, read_only=not IS_MOTHERDUCK)
     try:
         return con.execute(sql).df()
     finally:

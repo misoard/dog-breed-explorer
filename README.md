@@ -4,8 +4,9 @@
 
 A right-sized daily data pipeline and a thin analytics dashboard over [TheDogAPI](https://thedogapi.com)'s
 **627 dog breeds**. Bronze → silver → gold in **DuckDB + dbt**, scheduled by **GitHub Actions**, read
-by a **Streamlit** dashboard. No cloud, no managed services — it runs end to end on a laptop off a
-single DuckDB file, which is the deliberate scope for a POC.
+by a **Streamlit** dashboard. It runs end to end on a laptop off a single DuckDB file — the deliberate
+scope for a POC — with an **optional M9 cloud path** (Elementary observability + a MotherDuck-backed
+hosted dashboard) layered on top without changing a line of model SQL.
 
 > **Where to start:** [`DECISIONS.md`](DECISIONS.md) is the reasoning record — the tool choices, the
 > tradeoffs, and what I'd build next. It is the most important file here. This README is the tour and
@@ -52,28 +53,51 @@ The pipeline and the dashboard both run locally against one file (`dogs.duckdb`)
 
 ## Architecture
 
-Write and read paths are decoupled: the **pipeline** builds gold daily; the **dashboard** reads
-whatever gold currently holds, at any time.
+Write and read paths are decoupled: the **pipeline** builds gold; the **dashboard** reads whatever
+gold currently holds, at any time. **One env var (`DBT_DUCKDB_PATH`) picks where gold lands** — a
+local file, or MotherDuck — with no change to a line of model SQL.
 
 ```
-  WRITE (daily, automated)                         READ (on demand)
-  Dog API → RAW/bronze ──dbt──> STAGING/silver ──dbt──> MARTS/gold ──> Streamlit dashboard
-            (untouched JSON,     (parse, type,          (dim + marts,    (thin: reads gold,
-             partitioned by      dedupe, sentinels      all business     renders 3 questions)
-             run_date)           → null)                logic here)
-  Scheduled by GitHub Actions cron @ 02:00 UTC. The dashboard never triggers the pipeline.
+  WRITE (automated)                                          READ (on demand, thin)
+  Dog API ─ingest→ RAW ──dbt──> STAGING ──dbt──> GOLD          Streamlit dashboard
+                   bronze       silver          marts          (reads gold, renders 3 Qs,
+                   (untouched   (parse, type,   (dim + marts,    never triggers the pipeline)
+                    JSON, by     dedupe,         all business
+                    run_date)    →null)          logic here)
+                          + Elementary observability (test/run health)
+                                     │
+        one env var (DBT_DUCKDB_PATH) selects where GOLD + observability are written:
+          • local  ./dogs.duckdb        ← laptop demo build, and CI PR builds (ephemeral)
+          • cloud  md:dogs  (MotherDuck) ← the 02:00 cron; DURABLE, accumulates night over night
+                                     │                          the dashboard reads gold:
+                                     ▼                            • locally → ./dogs.duckdb
+                          gold + observability                    • hosted  → md:dogs  (next step)
+  The cron writes MotherDuck; CI PR builds stay local, so a PR never clobbers served data.
 ```
 
 | Layer | Choice | Why (one line) |
 |---|---|---|
 | Ingestion | Python + `requests` + `tenacity` | one endpoint; idempotent, raw preserved, retry on transient failure |
-| Warehouse | **DuckDB** (single file) | analytical/OLAP, zero-ops, native JSON |
+| Warehouse | **DuckDB** (local file) → **MotherDuck** (hosted, same engine) | analytical/OLAP, zero-ops, native JSON; the cron persists to MotherDuck so gold survives the VM |
 | Transform / test | **dbt Core** + `dbt-duckdb` | SELECT models, `ref()` DAG, 39 tests, contracts, dev/prod targets |
+| Observability | **Elementary** (dbt package) | captures every test/run result durably; day-over-day health once in MotherDuck |
 | CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ 02:00 UTC |
-| Dashboard | **Streamlit** + Altair | thin reader of gold marts |
+| Dashboard | **Streamlit** + Altair | thin reader of gold marts (local file, or MotherDuck when hosted) |
 
-**Right-sized on purpose:** no Airflow / managed warehouse for one daily job. The reasoning for every
-choice — and where it was traded off — is in [`DECISIONS.md`](DECISIONS.md).
+**Right-sized on purpose:** no Airflow for one daily job, and DuckDB — local, or the same engine
+hosted on MotherDuck's free tier — rather than a heavy managed warehouse (Snowflake/BigQuery). The
+reasoning for every choice, and where it was traded off, is in [`DECISIONS.md`](DECISIONS.md).
+
+**Targets — same models, only the output path differs** (one seam, the `DBT_DUCKDB_PATH` env var):
+
+| target | command | writes to | used by |
+|---|---|---|---|
+| `dev` (default) | `dbt build` | `dogs_dev.duckdb` | me, iterating on models — a bare build can't touch the serving copy |
+| `prod` | `./scripts/run_pipeline.sh` | `dogs.duckdb` (local file) | the local demo the dashboard reads, and CI PR builds (ephemeral) |
+| `prod` → cloud | `DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh` | `md:dogs` (MotherDuck) | the 02:00 cron — durable, what the hosted dashboard reads |
+
+`dev` is the default precisely so reaching the serving copy (`--target prod`, or the script) is a
+deliberate act. The `md:` path just swaps the connection string — same SQL, same targets.
 
 ---
 
@@ -164,24 +188,57 @@ dog-breed-explorer/
   **contracts** on the 6 marts the dashboard reads. Full breakdown in [`SPEC.md`](SPEC.md).
 - **On every pull request**, GitHub Actions runs the whole pipeline **from an empty warehouse**
   (ingest → `dbt build` → tests) and reports green/red — the badge at the top.
-- **A daily cron @ 02:00 UTC** re-runs it against the live API as a health check, then discards its
-  warehouse: CI *proves* the pipeline, the laptop *serves* the demo (a deliberate POC scope call —
-  [`DECISIONS.md` §5](DECISIONS.md)).
+- **A daily cron @ 02:00 UTC** re-runs it against the live API as a health check. By default it
+  discards its warehouse — CI *proves* the pipeline, the laptop *serves* the demo; with the M9 cloud
+  path the cron *also* serves, building into MotherDuck while PR builds stay local (so a PR can't
+  clobber served data). A deliberate scope call, [`DECISIONS.md` §5](DECISIONS.md).
 
 *(The badge shows "no status" to anyone without repo access — the repo is private; reviewers with read
 access see the real state.)*
 
 ---
 
+## Observability & cloud serving (M9, optional stretch)
+
+The local pipeline is complete on its own; M9 adds two things on top, both **opt-in and off the
+default path**:
+
+- **Observability — [Elementary](https://www.elementary-data.com/).** The project's one external dbt
+  package, added for *observability infra, not test logic* (DECISIONS §3). An automatic on-run-end
+  hook captures every test result (status, timing, the warn/error split for all 39 tests) into
+  `main_elementary` tables on each `dbt build`; `./scripts/observability_report.sh` renders an HTML
+  health dashboard from them (regenerable, not committed — same rule as the dbt docs graph).
+- **Cloud serving — [MotherDuck](https://motherduck.com).** The single durable-storage unlock. The
+  **cron** (only) sets `DBT_DUCKDB_PATH=md:dogs`, so it builds gold + Elementary into hosted DuckDB
+  that persists past the VM — while CI PR builds stay local/ephemeral, so a PR never clobbers served
+  data. The dashboard reads that store when `DOGS_DB=md:dogs` is set (else the local file). **Zero
+  model SQL changed** — only the connection string. Deploying `app.py` on Streamlit Community Cloud
+  with the token as a platform secret turns the delivery into a live **link**.
+
+```bash
+# build/serve the CLOUD store (needs MOTHERDUCK_TOKEN in .env):
+DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh    # cron does this nightly
+DOGS_DB=md:dogs streamlit run dashboard/app.py        # dashboard reads the cloud
+./scripts/observability_report.sh md:dogs             # observability report from the cloud
+```
+
+<!-- HOSTED LINK: added here once the Streamlit Community Cloud deploy is live. -->
+
+---
+
 ## Secrets
 
-`DOG_API_KEY` is the only secret. Locally it lives in a gitignored `.env` (template: `.env.example`);
-in CI it is a GitHub Actions secret. It is read from the environment, never committed, never logged.
+`DOG_API_KEY` is the primary secret — locally in a gitignored `.env` (template: `.env.example`), in CI
+a GitHub Actions secret. **`MOTHERDUCK_TOKEN`** is a second, **optional** secret, needed only for the
+M9 cloud path (same handling: `.env` locally, an Actions secret for the cron). Both are read from the
+environment, never committed, never logged.
 
 ---
 
 ## Next, given more time
 
-Recorded in [`DECISIONS.md` → "What I'd build next"](DECISIONS.md): a run-metadata / observability
-layer (the one form of state statelessness deliberately leaves on the table), SCD-2 snapshots for
-change history, a hosted deploy, IaC, and the LLM enrichment bonus (specified, not built).
+Recorded in [`DECISIONS.md` → "What I'd build next"](DECISIONS.md). The keystone — durable storage —
+is **now built (M9 Part B)**, which delivered the observability trend view and hosted serving above.
+Still future: **SCD-2 snapshots** for full change history, **incremental** models at scale, **IaC**
+(Terraform the ruleset + secrets), an **alert** on a failed cron, and the **LLM enrichment** bonus
+(specified, not built).

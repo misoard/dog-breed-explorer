@@ -128,7 +128,14 @@ dog_breed_explorer:
 | target | who runs it | database | lifetime |
 |---|---|---|---|
 | **dev** | me, iterating on models | `dogs_dev.duckdb` | scratch — delete it any time |
-| **prod** | the CI/scheduled workflow, **and** my local demo build | `dogs.duckdb` | discarded with the VM in CI; durable on my laptop, where the dashboard reads it |
+| **prod** | the CI PR workflow **and** my local demo build | `dogs.duckdb` (local file) | discarded with the VM in CI; durable on my laptop, where the dashboard reads it |
+| **prod → `md:dogs`** | the **cron** (M9 Part B), via `DBT_DUCKDB_PATH=md:dogs` | MotherDuck (hosted DuckDB) | **durable in the cloud** — gold + Elementary persist night over night; the hosted dashboard reads it |
+
+**Same target, same SQL — only the output path changes** (a file, or an `md:` connection string that
+dbt-duckdb routes to MotherDuck). The `prod` target isn't three targets; it's one, whose
+`DBT_DUCKDB_PATH` the caller sets: CI PRs leave it local, the cron sets `md:dogs`. `md:` needs
+`MOTHERDUCK_TOKEN` in the environment (and `run_pipeline.sh` `CREATE DATABASE IF NOT EXISTS`es it once,
+since MotherDuck doesn't auto-create on attach).
 
 ```bash
 # dev — iterate without touching the serving copy
@@ -140,9 +147,10 @@ python ingestion/ingest.py --db dogs.duckdb
 dbt build --target prod
 ```
 
-**`prod` means "the production-shaped build", not "the cloud."** Per DECISIONS.md §5, CI proves the
-pipeline and discards its warehouse; the laptop's prod build is what the dashboard reads. Same
-target, same code, two lifetimes.
+**`prod` means "the production-shaped build."** Per DECISIONS.md §5, CI PRs prove the pipeline against
+a local throwaway warehouse; the laptop's prod build is what the local dashboard reads; and the cron
+(M9 Part B) points the *same* prod target at MotherDuck so the served copy is durable. Same target,
+same code, three lifetimes selected by one env var.
 
 **The coupling to watch:** ingestion writes the file dbt then reads, so `ingest.py --db` and the dbt
 target must point at the **same file**. They are two separate programs agreeing on a path — the one

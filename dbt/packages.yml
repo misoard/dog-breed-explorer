@@ -1,0 +1,17 @@
+# The project's FIRST external dbt package — a deliberate exception, not a reversal.
+#
+# DECISIONS.md §3 says the tests are hand-written singular tests, no dbt_utils, on
+# purpose: this case is graded on *understanding* dbt, and a package would hide the
+# very mechanics being tested. Elementary is defensible HERE because it is
+# OBSERVABILITY INFRASTRUCTURE, not test LOGIC — it captures the results of the
+# tests I already wrote (pass/warn/fail, timings) into queryable tables via an
+# automatic on-run-end hook, and generates a health report. It adds no assertion I
+# couldn't defend; it records the ones I can. Same shape of exception as
+# statelessness (§1): the rule holds, and this is the one documented place it doesn't.
+#
+# Version pinned to match the `edr` CLI that renders the report (must agree on
+# major.minor). dbt-core requirement is >=1.0,<3.0, so dbt 1.12 is in range;
+# DuckDB support landed in the package at 0.23.0.
+packages:
+  - package: elementary-data/elementary
+    version: 0.25.1

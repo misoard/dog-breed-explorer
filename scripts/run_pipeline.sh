@@ -27,6 +27,15 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Load .env so BOTH programs see the secrets. ingest.py self-loads .env for
+# DOG_API_KEY, but dbt reads env vars only from the SHELL — and a MotherDuck target
+# (md:dogs) needs MOTHERDUCK_TOKEN visible to dbt, not just to ingest.py. Sourcing
+# here is the one place that covers both. CI has no .env (secrets arrive as Actions
+# env vars already in the shell), so this is skipped there — exactly right.
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  set -a; source "$REPO_ROOT/.env"; set +a
+fi
+
 # dbt's default is `dev` on purpose (profiles.yml), so a bare `dbt build` cannot
 # touch the serving copy. This script is what CI runs, and CI runs prod — so prod
 # is the default HERE, and reaching dev is the deliberate act. Same principle,
@@ -42,8 +51,20 @@ if [[ -z "${DBT_DUCKDB_PATH:-}" ]]; then
     DBT_DUCKDB_PATH="$REPO_ROOT/dogs.duckdb"
   fi
 fi
-# Absolute-ise whatever we were handed, for the same reason.
-DBT_DUCKDB_PATH="$(cd "$(dirname "$DBT_DUCKDB_PATH")" && pwd)/$(basename "$DBT_DUCKDB_PATH")"
+# A MotherDuck path is a CONNECTION STRING (md:dogs), not a file — absolutising it
+# would turn it into a bogus local path ($REPO_ROOT/md:dogs). So absolute-ise only
+# real file paths, and leave md: alone. This is the M9 Part B seam: the SAME env var
+# now selects local file OR cloud, and dbt-duckdb routes an md: path to MotherDuck.
+# md: requires MOTHERDUCK_TOKEN in the environment (sourced from .env above locally,
+# an Actions secret in the cron).
+if [[ "$DBT_DUCKDB_PATH" == md:* ]]; then
+  if [[ -z "${MOTHERDUCK_TOKEN:-}" ]]; then
+    echo "ERROR: DBT_DUCKDB_PATH=$DBT_DUCKDB_PATH needs MOTHERDUCK_TOKEN (set it in .env or an Actions secret)." >&2
+    exit 1
+  fi
+else
+  DBT_DUCKDB_PATH="$(cd "$(dirname "$DBT_DUCKDB_PATH")" && pwd)/$(basename "$DBT_DUCKDB_PATH")"
+fi
 export DBT_DUCKDB_PATH
 
 # Prefer the project venv when there is one. dbt needs protobuf>=6 and the conda
@@ -59,6 +80,18 @@ echo "--- pipeline: target=$DBT_TARGET db=$DBT_DUCKDB_PATH"
 echo "--- python:   $(command -v python)"
 echo "--- dbt:      $(command -v dbt)"
 
+# 0. MotherDuck only: create the database once. Connecting to `md:dogs` ATTACHES an
+#    existing database — MotherDuck does NOT auto-create it, so a first-ever run 403s
+#    with "no database named 'dogs' found". Both writers (ingest.py, dbt) hit that, so
+#    the choke point is here, before either connects. IF NOT EXISTS makes it idempotent
+#    — free on every subsequent night. Local-file paths need nothing (DuckDB creates the
+#    file on open).
+if [[ "$DBT_DUCKDB_PATH" == md:* ]]; then
+  MD_DB_NAME="${DBT_DUCKDB_PATH#md:}"
+  echo "--- [0/2] ensure MotherDuck database '$MD_DB_NAME' exists"
+  python -c "import duckdb; duckdb.connect('md:').execute('CREATE DATABASE IF NOT EXISTS \"$MD_DB_NAME\"')"
+fi
+
 # 1. Ingest. Fetches all breeds, validates completeness IN MEMORY, then replaces
 #    today's run_date partition in one transaction. A partial or failed fetch
 #    exits non-zero here and never touches last-good data (set -e stops us).
@@ -69,6 +102,14 @@ python "$REPO_ROOT/ingestion/ingest.py" --db "$DBT_DUCKDB_PATH"
 #    run, and a failing test blocks that model's children. MUST run from dbt/ —
 #    from the repo root dbt falls back to ~/.dbt/profiles.yml and fails with a
 #    misleading "profile not found" that looks like a broken install.
-echo "--- [2/2] dbt build --target $DBT_TARGET"
+#
+#    `dbt deps` FIRST, always: dbt_packages/ is gitignored (downloaded deps, not
+#    source), so a fresh checkout — every CI run and the cron's clean VM — has zero
+#    packages, and `dbt build` aborts with "expects N package(s)... found 0. Run dbt
+#    deps." It's idempotent and fast when already installed (checks the lock), so
+#    running it every time costs nothing locally and is required in CI. One place,
+#    shared by all three callers — the same reason the pipeline lives in this script.
+echo "--- [2/2] dbt deps + build --target $DBT_TARGET"
 cd "$REPO_ROOT/dbt"
+dbt deps
 dbt build --target "$DBT_TARGET"
