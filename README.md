@@ -15,12 +15,15 @@ single DuckDB file, which is the deliberate scope for a POC.
 
 ## What it answers
 
-Three of the brief's four questions, plus the evidence behind the modeling choice:
+The brief suggests four questions and asks for at least two. This dashboard answers **two of them**, and
+adds a temperament angle of its own, in the dashboard's own words:
 
 - **How are breeds distributed across weight classes?**
-- **Which breeds live longest, and does size cost life span?**
+- **Which breeds have the longest predicted life span? Does size cost life span?**
 - **How does temperament shift with size?**
-- *(evidence)* why "size" is measured as **weight, not height**.
+
+The first two come from the brief; the third is ours. "Size" is weight throughout, with the
+correlation evidence for that choice shown on the page.
 
 ---
 

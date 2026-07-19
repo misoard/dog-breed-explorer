@@ -60,9 +60,11 @@ Persistent context for Claude Code. Read this every session. The detailed schema
   SQL. `ingest.py --db` must point at the same file as the target. Schema in SPEC.md.
 - **Always run dbt from `dbt/`.** It auto-finds `./profiles.yml` there; from the repo root it falls
   back to `~/.dbt/profiles.yml` and fails with a misleading "not found" that looks like a broken
-  install. **M5's workflow needs `working-directory: dbt`** on every dbt step. Env is the project
-  **`.venv`** (`.venv/bin/dbt`) — NOT miniconda base: dbt needs protobuf>=6 and the base TensorFlow
-  stack needs <4, so they cannot coexist (learned the hard way — DAY_REPORT).
+  install. **`scripts/run_pipeline.sh` handles this by `cd`-ing into `dbt/`** before `dbt build` —
+  the CI workflows just call the script, so the `cd` is deduplicated in one place (not a per-step
+  `working-directory:` in the YAML). A manual dbt command still needs you to `cd dbt` first. Env is
+  the project **`.venv`** (`.venv/bin/dbt`) — NOT miniconda base: dbt needs protobuf>=6 and the base
+  TensorFlow stack needs <4, so they cannot coexist (learned the hard way — DAY_REPORT).
 
 ## Non-negotiable rules
 - **Secrets never in the repo.** `/v1/breeds` **requires an API key** — unauthenticated calls return
