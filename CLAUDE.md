@@ -34,7 +34,7 @@ Persistent context for Claude Code. Read this every session. The detailed schema
 - Warehouse: **DuckDB** (single file, e.g. `dogs.duckdb`). Analytical/OLAP, zero-ops, native JSON.
 - Transform / test / docs: **dbt Core** with the `dbt-duckdb` adapter.
 - Version control: **git / GitHub**, incremental commits.
-- CI/CD + scheduling: **GitHub Actions** (test on PR; cron daily @ 02:00 UTC on main).
+- CI/CD + scheduling: **GitHub Actions** (test on PR; cron daily @ ~02:00 UTC on main).
 - Dashboard: **Streamlit**, thin — reads gold marts only.
 - Right-sizing is deliberate: NO Airflow/Kubernetes/managed warehouse for one daily job. If you
   think we need a heavier tool, flag it as a tradeoff and let me decide.

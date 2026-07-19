@@ -12,7 +12,7 @@ milestone before moving on. The commit history should mirror these milestones.
 | Transform/model/test | **dbt Core** (`dbt-duckdb`) | SELECT-based models, `ref()` DAG, tests, docs, dev/prod targets |
 | Version control | **GitHub** | incremental commits, secrets out of repo |
 | CI/CD | **GitHub Actions** | test+build on PR, scheduled run on merge |
-| Orchestration | **Actions cron @ 02:00 UTC** | one daily job — Airflow would be overkill (deliberate) |
+| Orchestration | **Actions cron @ ~02:00 UTC** | one daily job — Airflow would be overkill (deliberate) |
 | Dashboard | **Streamlit** (or Evidence.dev) | thin reader of gold marts; export PDF/screenshots |
 | Bonus | LLM enrichment | free-text → structured column, evaluated |
 
@@ -32,7 +32,7 @@ milestone before moving on. The commit history should mirror these milestones.
    │   ▼                                      │                      │
    │ MARTS / gold (dim_breeds + aggregates)   │──────────────────────┘
    └─────────────────────────────────────────┘
-   Scheduled by GitHub Actions cron @ 02:00 UTC.  Dashboard never triggers the pipeline.
+   Scheduled by GitHub Actions cron @ ~02:00 UTC.  Dashboard never triggers the pipeline.
 ```
 
 Key point to articulate in the debrief: the **pipeline** builds the gold layer daily; the
@@ -118,7 +118,7 @@ dog-breed-explorer/
 └─ .github/
    └─ workflows/
       ├─ ci.yml                  # on PR: install, dbt build, dbt test (visible status/badge)
-      └─ scheduled.yml           # cron 02:00 UTC: ingest -> dbt build
+      └─ scheduled.yml           # cron ~02:00 UTC: ingest -> dbt build
 
 Committed for transparency: exploration/ code + reports (shows I profiled first). Gitignored: .env,
 the .duckdb file, dbt target/, and exploration/raw_breeds.json (source data, regenerable by running
@@ -364,7 +364,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       future badge has a default-branch run to report; `concurrency` cancels superseded runs).
       Parses with the right triggers/steps. The **pipeline** it runs is proven (below); the
       **trigger** is not, until a PR runs it.
-- [ ] Cron @ 02:00 UTC: ingest → `dbt build --target prod` → tests → **discard the warehouse**.
+- [ ] Cron @ ~02:00 UTC: ingest → `dbt build --target prod` → tests → **discard the warehouse**.
       **CI proves the pipeline; it does not serve it** (DECISIONS.md §5) — the run is a health check
       with a real API call attached, which is what catches the API changing shape or the key
       expiring. Not a deployment; say so out loud rather than letting it look like an oversight.
@@ -554,7 +554,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       fallback the seam predicts; adding the two secrets fixed it.) The token is a platform secret,
       never in the repo or on the page.
       Full served stack: GitHub repo → Streamlit Cloud (runs app.py) → reads `md:dogs` → MotherDuck
-      (gold + Elementary, refreshed 02:00 by the cron). Three free-tier services, two connection-string
+      (gold + Elementary, refreshed nightly by the cron). Three free-tier services, two connection-string
       changes, zero model changes.
 
 ---
@@ -596,7 +596,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 >
 > Stack (decided — don't change without flagging a tradeoff): ingestion = [dlt / Python+requests+
 > tenacity — my choice]; warehouse = DuckDB; transform/test/docs = dbt Core with dbt-duckdb; CI/CD
-> + daily 02:00 UTC = GitHub Actions; dashboard = Streamlit; git with incremental commits per milestone.
+> + daily ~02:00 UTC = GitHub Actions; dashboard = Streamlit; git with incremental commits per milestone.
 >
 > Source: https://api.thedogapi.com/v1/breeds — **an API key IS required**. Unauthenticated calls
 > return **403 Forbidden**; the 628 breeds only came back once the key was sent as an `x-api-key`

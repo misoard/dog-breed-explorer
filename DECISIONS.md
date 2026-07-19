@@ -143,7 +143,7 @@ PR spends a real API call (no fixture) — the upside is that each check is a ge
 from an empty warehouse. **The serving half is built without abandoning that thesis:** rather than
 *convert* the prod target, I kept the split and pointed only the **cron** at hosted DuckDB
 (`DBT_DUCKDB_PATH=md:dogs`), so **PR builds still prove against a throwaway local warehouse while the
-02:00 cron serves** — writing gold + the observability run-history to a durable store the hosted
+nightly cron serves** — writing gold + the observability run-history to a durable store the hosted
 dashboard reads. Proving and serving stay different jobs on different triggers, so a PR can never
 overwrite last night's served data. It was a one-line change because the pipeline is stateless (§1) —
 only the output **path** moved (a file → an `md:` connection string), no model SQL touched.
