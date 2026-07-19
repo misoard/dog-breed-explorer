@@ -823,3 +823,136 @@ happened at the *design* layer, in the spec or the live app, never as a rebuild 
   hosted dashboard.
 - The dashboard is **local-only** by design (not in CI). The README screenshots are chart *exports*; we
   tried a full-page Playwright capture and reverted it as not worth a 93 MB browser for a POC.
+
+## M9 (Part A) — observability, the local half: one package, and the discipline of stopping there
+
+The brief offers an observability bonus ("extended tests wired to an alert channel"), and it also says
+in as many words that it is **not scoring production polish** — a laptop DuckDB pipeline is a complete
+answer. Those two sentences set the whole shape of this milestone: do the high-ROI local half, prove
+it, write down exactly how the cloud half follows, and **stop before touching prod's storage** so a
+half-finished integration never reads worse than a crisp "here's how I'd do it." Debrief prep outranks
+this; a stretch that eats it is a net loss.
+
+### The one idea, and why it's one package and not a hand-rolled audit table
+The DECISIONS "what I'd build next" already argued the shape: GitHub gives compute + scheduling for
+free, so **the only deferred piece is durable storage**, and observability splits cleanly along it.
+*Point-in-time* health — did this run's tests pass, how long did each take — is stateless-doable, and
+we already had `annotate_warns.py` doing part of it. *Trends* — is the null rate creeping over a week —
+need yesterday, which the stateless pipeline (§1) and the warehouse-discarding CI (§5) deliberately
+don't keep. Part A builds the point-in-time half properly. I'd planned to hand-roll an
+`audit.pipeline_runs` table; Elementary does exactly that and ships a report, so reaching for it is the
+same call as reaching for dbt_utils in production — **infra, not test logic.** That distinction is the
+whole defence of adding the project's *first* external dbt package after four milestones of writing
+every test by hand: it captures the results of the 39 assertions I already own, it doesn't add a 40th I
+can't explain.
+
+### The guard I was most worried about held
+The failure mode a package can quietly introduce is a **dropped test** — the same "looks like coverage,
+isn't" sin the whole suite is built to avoid. So the acceptance check wasn't "did it install," it was
+"did the registered data-test count survive." It did: `Found 39 models, 39 data tests` — the model
+count jumped 9 → 39 (our 9 + Elementary's 30 in their own `main_elementary` schema), and **the data
+tests stayed exactly 39**. Build `PASS=82 WARN=0 ERROR=0`, `audit.py` green. Better than counting:
+Elementary's own tables show it captured all 39 results **with the warn/error severity preserved**
+(`assert_lifespan_null_rate_stable`, `assert_metric_shape_known` land as `warn`, the rest `ERROR`) —
+the exact split this project fought for, now queryable instead of scrolling a log.
+
+### What I got wrong (and caught)
+- **I misdiagnosed a commit error as a thread race — and my "fix" disproved itself.** The check that
+  earned its keep: a cold-warehouse prod run (the CI condition) threw **11 `DuckDB adapter: Commit
+  failed ... Tried to commit transaction on connection X, but it does not have one open!`** tracebacks.
+  My first read was the textbook one — DuckDB is single-writer, dbt runs `threads: 4`, Elementary's ~30
+  new models raised the concurrency, so I set `threads: 1`. Re-ran: **still exactly 11.** Threading had
+  nothing to do with it. I reverted the threads change rather than ship a fix that fixed nothing (a
+  misattributed config is worse than none). The real cause is an **upstream** dbt-duckdb ⨯ Elementary
+  transaction-handling bug (Elementary #1712, dbt-core #11966): Elementary's on-run-end artifact upload
+  calls `commit` outside dbt's transaction; the write itself succeeds (DuckDB auto-commits), so the node
+  still lands `OK`. **It is log noise, not a failure**, and I proved that where it counts: exit 0,
+  `Done. PASS=82 WARN=0 ERROR=0`, and `run_results.json` is **43 success + 39 pass, zero error/warn** —
+  so dbt's authoritative accounting is clean and the CI PR annotations (which read `run_results.json`,
+  not stdout) are untouched. Cold build = 11 lines, warm = 3 (proportional to how many incremental
+  models actually write). I chose to **document it, not silence it**: raising the adapter's log level
+  would bury genuine errors too — the exact "signal killed to look tidy" trade this project refuses.
+  The honest cost of adding the package on DuckDB, written down.
+- **`--project-dir` pointed edr at the wrong dbt project.** First run of the report script died with
+  "No dbt_project.yml found at `<repo>/dbt_project.yml`" — I'd passed our project dir, but `edr` renders
+  from its *own* bundled dbt project and only needs `--profiles-dir` to reach the warehouse. Removed the
+  flag; it rendered. A reminder that the CLI is a *reader* of the store, not a runner of our models.
+- **The edr profile schema is `main_elementary`, not `main`.** Elementary's `+schema: elementary`
+  concatenates onto the `main` target the same way our staging/marts schemas do — so the tables live in
+  `main_elementary`, and the `elementary` connection profile the CLI needs has to name that schema
+  exactly. Same concatenation gotcha documented for our own layers, one more place.
+
+### The two "don't over-engineer" calls
+- **A separate `.venv-edr`, not the pipeline venv.** `edr` is only a reader of the duckdb file; it
+  shares none of the pipeline's runtime. Given this project has *already* been bitten by a
+  protobuf/TensorFlow version clash, letting the report tool pin versions inside the pipeline `.venv`
+  was a risk with no upside. It gets its own venv, bootstrapped by the script on first run — so the
+  whole thing still runs from the repo, just not from the same interpreter.
+- **The 5.6 MB report is regenerable, not committed.** Same rule as the dbt docs lineage graph (§5):
+  the permanent, reviewable change is the *wiring* — `packages.yml`, the pinned `package-lock.yml`, the
+  `elementary:` block — which is ~20 lines and diffs cleanly. The generated HTML is a `.gitignore` line
+  and a `scripts/observability_report.sh` away, exactly like the demo the laptop serves.
+
+### Still open (Part B — a review checkpoint, not a thing to barrel through)
+Part B changes prod's storage target (MotherDuck: `path: "md:dogs"`) and adds a credential
+(`MOTHERDUCK_TOKEN`) — that's the durable-storage unlock the whole "what I'd build next" hinges on, and
+it turns this same local report into a day-over-day trend for free. Deliberately **not started**: it's
+a real change to the served stack and a new secret, so it waits for review, per how we work.
+
+## M9 (Part B) — durable storage: the one change that unlocks the rest, done in three connection strings
+
+Reviewed Part A, then chose to keep going. Part B is the move DECISIONS "what I'd build next" is
+organised around: **the only genuinely deferred piece of the whole architecture is persistence
+between runs.** GitHub already gives compute + scheduling for free; add a durable store and history,
+observability trends, and hosted serving all fall out of it. This is that store.
+
+### The design call: I did NOT do what the brief literally said
+The brief says "point the **prod** target at MotherDuck." I didn't — I pointed only the **cron** at
+it, via the env-var seam that already existed. Reasoning: converting the prod target would make
+*every* prod build cloud, including every CI PR run — so each PR would need the token and would
+**overwrite the shared served gold** just to prove a code change. That destroys §5's cleanest
+property ("CI proves, something else serves"). Instead: `ci.yml` PR builds stay local + throwaway
+(prove), and only `scheduled.yml` sets `DBT_DUCKDB_PATH=md:dogs` (serve). The result is *sharper*
+than the brief's version — proving and serving stay different jobs on different triggers, and a PR
+can never clobber last night's data. This is the kind of place the "it's my architecture to defend"
+framing earns out: the brief is a starting point, not a spec to follow off a cliff.
+
+### Why it was nearly free — and the one place it wasn't
+The `DBT_DUCKDB_PATH` seam built back in M5 (one env var, shared by ingest.py and dbt) already
+accepts an `md:` path — dbt-duckdb routes it to MotherDuck natively. So the pipeline change was
+**three lines** in `run_pipeline.sh`, not a rewrite: source `.env` (dbt reads the token from the
+shell, not just ingest.py); *don't* absolutise a connection string into `$REPO_ROOT/md:dogs`; and the
+one thing that genuinely surprised me —
+
+- **MotherDuck doesn't auto-create the database on attach.** First cloud run died at
+  `duckdb.connect("md:dogs")` with `no database named 'dogs' found`. `md:dogs` *attaches* an existing
+  database; it doesn't make one. Fix: a one-time `CREATE DATABASE IF NOT EXISTS "dogs"` against bare
+  `md:` before either writer connects — placed in `run_pipeline.sh`, the single choke point both
+  ingest.py and dbt pass through, so neither program grows its own md: special-case. Idempotent, so
+  it's free on every subsequent night.
+
+### Proven live from the laptop, not asserted
+The whole cloud path, end to end: `DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh` → 628 breeds
+ingested to MotherDuck → `Found 39 models, 39 data tests` → `PASS=82 WARN=0 ERROR=0` **in the cloud**.
+Then a plain `duckdb.connect('md:dogs')` reader (which is all the dashboard is) returned the published
+numbers *exactly* — `dim_breeds` 627, bridge 3538, coverage 585·42, giant 58, corr −0.67. The
+dashboard's new `DOGS_DB` seam resolved to `md:dogs` and pulled 585/42 from the cloud; the Elementary
+report regenerated against `dogs.main_elementary`. Zero model SQL changed — the brief's "materialization
+is a deployment decision" made concrete: the same models, a different connection string, and the POC
+became a served stack. (The benign Elementary commit-noise from Part A rides along on the cloud build
+too — same story: green, `run_results` clean.)
+
+### An unplanned bonus: §1's deferred history is now partly real
+Statelessness (§1) deferred *change-history* because holding many daily partitions meant bolting on
+persistence. The cron writing to MotherDuck means `raw.breeds` now **accumulates a partition per
+night in the cloud** — the durable raw history §1 said it would take durable storage to justify. It's
+not SCD-2 yet (that's still the snapshot work), but "what did the API return last Tuesday" is now
+answerable where it wasn't. Elementary's tables accumulate the same way — that's the trend view.
+
+### Still open — the part that's genuinely mine to click, not the agent's to claim
+Two steps live outside the repo, so they stay unticked on the same honesty rule as M5's triggers:
+1. Add `MOTHERDUCK_TOKEN` as a **GitHub Actions secret** (like `DOG_API_KEY`) — until then the next
+   *scheduled* run will fail (PR CI is unaffected — it never touches the cloud).
+2. Deploy `app.py` on **Streamlit Community Cloud** with `MOTHERDUCK_TOKEN` + `DOGS_DB=md:dogs` as
+   platform secrets → the public link. The *code* is done and the cloud read is verified; a hosted URL
+   is only proven by a real deployment, which is mine to do.

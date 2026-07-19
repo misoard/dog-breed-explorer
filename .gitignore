@@ -11,6 +11,15 @@ __pycache__/
 target/
 dbt_packages/
 logs/
+
+# M9 observability — the Elementary report and the edr CLI's working dir are GENERATED,
+# so regenerable, not committed (scripts/observability_report.sh) — same rule as the dbt
+# docs lineage graph (DECISIONS §5: the laptop regenerates the demo, it isn't checked in).
+# The permanent, reviewable change is the package wiring: dbt/packages.yml +
+# dbt/package-lock.yml + the elementary block in dbt_project.yml — those ARE committed.
+edr_target/
+elementary_report.html
+.venv-edr/
 # dbt writes a per-machine anonymous id here — local state, not project config
 .user.yml
 
@@ -30,3 +39,6 @@ decisions_draft.md
 
 # Personal dbt study guide (LaTeX + PDF) — local only, not a project deliverable
 dbt_course/
+
+# Personal debrief rehearsal prep (LaTeX + PDF) — local only, not a project deliverable
+debrief_prep/
