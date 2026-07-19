@@ -50,6 +50,33 @@ The pipeline and the dashboard both run locally against one file (`dogs.duckdb`)
 
 ---
 
+## Architecture
+
+Write and read paths are decoupled: the **pipeline** builds gold daily; the **dashboard** reads
+whatever gold currently holds, at any time.
+
+```
+  WRITE (daily, automated)                         READ (on demand)
+  Dog API → RAW/bronze ──dbt──> STAGING/silver ──dbt──> MARTS/gold ──> Streamlit dashboard
+            (untouched JSON,     (parse, type,          (dim + marts,    (thin: reads gold,
+             partitioned by      dedupe, sentinels      all business     renders 3 questions)
+             run_date)           → null)                logic here)
+  Scheduled by GitHub Actions cron @ 02:00 UTC. The dashboard never triggers the pipeline.
+```
+
+| Layer | Choice | Why (one line) |
+|---|---|---|
+| Ingestion | Python + `requests` + `tenacity` | one endpoint; idempotent, raw preserved, retry on transient failure |
+| Warehouse | **DuckDB** (single file) | analytical/OLAP, zero-ops, native JSON |
+| Transform / test | **dbt Core** + `dbt-duckdb` | SELECT models, `ref()` DAG, 39 tests, contracts, dev/prod targets |
+| CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ 02:00 UTC |
+| Dashboard | **Streamlit** + Altair | thin reader of gold marts |
+
+**Right-sized on purpose:** no Airflow / managed warehouse for one daily job. The reasoning for every
+choice — and where it was traded off — is in [`DECISIONS.md`](DECISIONS.md).
+
+---
+
 ## The dashboard — what the data says
 
 *(A live Streamlit app; the charts below are exported from it.)*
@@ -104,33 +131,6 @@ Every chart states **its own** population: of 627 breeds, 625 have a weight, 587
 temperament; the scatter plots the **585** with both. Coverage is uneven by class (toy 29/40 vs giant
 58/58), which the dashboard shows rather than hides. Reasoning behind these choices is in
 [`DECISIONS.md` §0](DECISIONS.md) and the panel contract in [`DASHBOARD.md`](DASHBOARD.md).
-
----
-
-## Architecture
-
-Write and read paths are decoupled: the **pipeline** builds gold daily; the **dashboard** reads
-whatever gold currently holds, at any time.
-
-```
-  WRITE (daily, automated)                         READ (on demand)
-  Dog API → RAW/bronze ──dbt──> STAGING/silver ──dbt──> MARTS/gold ──> Streamlit dashboard
-            (untouched JSON,     (parse, type,          (dim + marts,    (thin: reads gold,
-             partitioned by      dedupe, sentinels      all business     renders 3 questions)
-             run_date)           → null)                logic here)
-  Scheduled by GitHub Actions cron @ 02:00 UTC. The dashboard never triggers the pipeline.
-```
-
-| Layer | Choice | Why (one line) |
-|---|---|---|
-| Ingestion | Python + `requests` + `tenacity` | one endpoint; idempotent, raw preserved, retry on transient failure |
-| Warehouse | **DuckDB** (single file) | analytical/OLAP, zero-ops, native JSON |
-| Transform / test | **dbt Core** + `dbt-duckdb` | SELECT models, `ref()` DAG, 39 tests, contracts, dev/prod targets |
-| CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ 02:00 UTC |
-| Dashboard | **Streamlit** + Altair | thin reader of gold marts |
-
-**Right-sized on purpose:** no Airflow / managed warehouse for one daily job. The reasoning for every
-choice — and where it was traded off — is in [`DECISIONS.md`](DECISIONS.md).
 
 ---
 
