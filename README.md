@@ -2,12 +2,12 @@
 
 [![CI](https://github.com/misoard/dog-breed-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/misoard/dog-breed-explorer/actions/workflows/ci.yml)
 
-**🔗 Live dashboard:** **https://dog-breed-explorer-case-study.streamlit.app/** — served from MotherDuck (hosted DuckDB), refreshed nightly by the 02:00 cron. No laptop involved.
+**🔗 Live dashboard:** **https://dog-breed-explorer-case-study.streamlit.app/** — served from MotherDuck (hosted DuckDB), refreshed nightly by the cron. No laptop involved.
 
 A right-sized daily data pipeline and a thin analytics dashboard over [TheDogAPI](https://thedogapi.com)'s
 **627 dog breeds**. Bronze → silver → gold in **DuckDB + dbt**, scheduled by **GitHub Actions**, read
 by a **Streamlit** dashboard. It runs end to end on a laptop off a single DuckDB file — the deliberate
-scope for a POC — with an **optional M9 cloud path** (Elementary observability + a MotherDuck-backed
+scope for a POC — with an **optional cloud path** (Elementary observability + a MotherDuck-backed
 hosted dashboard) layered on top without changing a line of model SQL.
 
 > **Where to start:** [`DECISIONS.md`](DECISIONS.md) is the reasoning record — the tool choices, the
@@ -70,7 +70,7 @@ local file, or MotherDuck — with no change to a line of model SQL.
                                      │
         one env var (DBT_DUCKDB_PATH) selects where GOLD + observability are written:
           • local  ./dogs.duckdb        ← laptop demo build, and CI PR builds (ephemeral)
-          • cloud  md:dogs  (MotherDuck) ← the 02:00 cron; DURABLE, accumulates night over night
+          • cloud  md:dogs  (MotherDuck) ← the nightly cron; DURABLE, accumulates night over night
                                      │                     the Streamlit APP reads gold:
                                      ▼                            • locally → ./dogs.duckdb
                           gold + observability                    • hosted  → md:dogs  (LIVE)
@@ -84,7 +84,7 @@ local file, or MotherDuck — with no change to a line of model SQL.
 | Warehouse | **DuckDB** (local file) → **MotherDuck** (hosted, same engine) | analytical/OLAP, zero-ops, native JSON; the cron persists to MotherDuck so gold survives the VM |
 | Transform / test | **dbt Core** + `dbt-duckdb` | SELECT models, `ref()` DAG, 39 tests, contracts, dev/prod targets |
 | Observability | **Elementary** (dbt package) | captures every test/run result durably; day-over-day health once in MotherDuck |
-| CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ 02:00 UTC |
+| CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ ~02:00 UTC |
 | Dashboard | **Streamlit** + Altair | thin reader of gold marts (local file, or MotherDuck when hosted) |
 
 **Right-sized on purpose:** no Airflow for one daily job, and DuckDB — local, or the same engine
@@ -97,7 +97,7 @@ reasoning for every choice, and where it was traded off, is in [`DECISIONS.md`](
 |---|---|---|---|
 | `dev` (default) | `dbt build` | `dogs_dev.duckdb` | me, iterating on models — a bare build can't touch the serving copy |
 | `prod` | `./scripts/run_pipeline.sh` | `dogs.duckdb` (local file) | the local demo the dashboard reads, and CI PR builds (ephemeral) |
-| `prod` → cloud | `DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh` | `md:dogs` (MotherDuck) | the 02:00 cron — durable, what the hosted dashboard reads |
+| `prod` → cloud | `DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh` | `md:dogs` (MotherDuck) | the nightly cron — durable, what the hosted dashboard reads |
 
 `dev` is the default precisely so reaching the serving copy (`--target prod`, or the script) is a
 deliberate act. The `md:` path just swaps the connection string — same SQL, same targets.
@@ -192,8 +192,8 @@ dog-breed-explorer/
   **contracts** on the 6 marts the dashboard reads. Full breakdown in [`SPEC.md`](SPEC.md).
 - **On every pull request**, GitHub Actions runs the whole pipeline **from an empty warehouse**
   (ingest → `dbt build` → tests) and reports green/red — the badge at the top.
-- **A daily cron @ 02:00 UTC** re-runs it against the live API as a health check. By default it
-  discards its warehouse — CI *proves* the pipeline, the laptop *serves* the demo; with the M9 cloud
+- **A daily cron @ ~02:00 UTC** re-runs it against the live API as a health check. By default it
+  discards its warehouse — CI *proves* the pipeline, the laptop *serves* the demo; with the optional cloud
   path the cron *also* serves, building into MotherDuck while PR builds stay local (so a PR can't
   clobber served data). A deliberate scope call, [`DECISIONS.md` §5](DECISIONS.md).
 
@@ -202,9 +202,9 @@ access see the real state.)*
 
 ---
 
-## Observability & cloud serving (M9, optional stretch)
+## Observability & cloud serving (optional stretch)
 
-The local pipeline is complete on its own; M9 adds two things on top, both **opt-in and off the
+The local pipeline is complete on its own; the optional cloud path adds two things on top, both **opt-in and off the
 default path**:
 
 - **Observability — [Elementary](https://www.elementary-data.com/).** The project's one external dbt
@@ -235,7 +235,7 @@ the token is a Streamlit platform secret, never in the repo or the page).
 
 `DOG_API_KEY` is the primary secret — locally in a gitignored `.env` (template: `.env.example`), in CI
 a GitHub Actions secret. **`MOTHERDUCK_TOKEN`** is a second, **optional** secret, needed only for the
-M9 cloud path (same handling: `.env` locally, an Actions secret for the cron). Both are read from the
+cloud path (same handling: `.env` locally, an Actions secret for the cron). Both are read from the
 environment, never committed, never logged.
 
 ---
@@ -243,7 +243,7 @@ environment, never committed, never logged.
 ## Next, given more time
 
 Recorded in [`DECISIONS.md` → "What I'd build next"](DECISIONS.md). The keystone — durable storage —
-is **now built (M9 Part B)**, which delivered the observability trend view and hosted serving above.
+is **now built**, which delivered the observability trend view and hosted serving above.
 Still future: **SCD-2 snapshots** for full change history, **incremental** models at scale, **IaC**
 (Terraform the ruleset + secrets), an **alert** on a failed cron, and the **LLM enrichment** bonus
 (specified, not built).
