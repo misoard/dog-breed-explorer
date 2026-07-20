@@ -127,7 +127,7 @@ on 2026-07-17.
   the rule DECISIONS.md §0 and SPEC make load-bearing: **"every chart prints its population; never
   print 627 next to a chart drawn from 585."** A dashboard that says "627 breeds" above a plot of 585
   is quietly lying — exposing the denominator is the difference between a chart and a claim.
-- **Mart:** `mart_data_coverage` — **grain: one row**, 7 columns. What each column *is*, and **which
+- **Mart:** `mart_data_coverage` — **grain: one row**, 8 columns. What each column *is*, and **which
   panel consumes it** (this is how the mart is used — not one header number, but a figure threaded
   onto every chart):
 
@@ -140,6 +140,12 @@ on 2026-07-17.
   | `breeds_with_temperament` | **626** | 1 (Mongrel) — its only tag is a sentinel, excluded | **D** |
   | `breeds_plotted_scatter` | **585** | = `breeds_with_both` | **C2** |
   | `breeds_excluded_scatter` | **42** | 627 − 585 | **C2** headline |
+  | `last_refreshed_at` | *ts* | wall-clock UTC of the current partition's ingestion (`max(loaded_at)`) | **footer** ("Last refreshed") |
+
+  `last_refreshed_at` is **trustworthy by construction** (M10): the cron publishes gold atomically
+  (build into a shadow schema → test → transactional swap), so live `main_marts` — and this timestamp —
+  advance **only on a full-green run**. A failed run re-ingests raw but never swaps, so "Last refreshed"
+  can't show a fresh time over stale/torn marts. See ARCHITECTURE_PLAN.md M10.
 
 - **Chart:** a single-line strip stating coverage **per field, not one global "excluded"** —
   **"627 breeds · 625 with weight · 587 with life span · 626 with temperament"** (a `st.markdown`

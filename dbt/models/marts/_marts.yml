@@ -225,3 +225,6 @@ models:
         description: Must equal mart_metric_correlation's n_breeds for weight<->life (585).
       - name: breeds_excluded_scatter
         data_type: bigint
+      - name: last_refreshed_at
+        data_type: timestamp
+        description: "Wall-clock (UTC) of the ingestion behind the current partition — the app's 'Last refreshed'."

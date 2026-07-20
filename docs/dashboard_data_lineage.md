@@ -61,7 +61,8 @@ Same rule — every number read from a mart:
 | Header coverage strip | `mart_data_coverage` | `total_breeds`, `breeds_with_weight`, `breeds_with_life_span`, `breeds_with_temperament` |
 | Longest-lived table | `mart_size_vs_lifespan` | `breed_name`, `size_class`, `weight_mid_kg`, `life_span_mid_years` (sort), `life_span_min/max_years` (published range) |
 | "Why weight, not height" table | `mart_metric_correlation` | `metric_a`, `metric_b`, `correlation`, `n_breeds` |
-| Footer coverage table | `mart_data_coverage` | all 7 columns + `corr.n_breeds` (the with-both = plotted = *n* cross-check) |
+| Footer coverage table | `mart_data_coverage` | the count columns + `corr.n_breeds` (the with-both = plotted = *n* cross-check) |
+| "Last refreshed" caption (footer) | `mart_data_coverage` | `last_refreshed_at` (wall-clock UTC of the current partition's ingestion) |
 
 ## Where the marts come from (the upstream half)
 
@@ -78,7 +79,10 @@ Dog API --ingest.py--> raw.breeds --stg_breeds--+--> dim_breeds --+--> mart_size
 ```
 
 Every gold column the dashboard shows is either a `dim_breeds` field or an aggregate of one (`count`,
-`avg`, `stddev_samp`, `corr`).
+`avg`, `stddev_samp`, `corr`) — with one deliberate exception: `mart_data_coverage.last_refreshed_at`
+is `max(loaded_at)` read from `stg_breeds`, i.e. *pipeline metadata* (when the data was ingested), not
+a breed fact. So `mart_data_coverage` also taps `stg_breeds` directly for that one timestamp, alongside
+its reads of `dim_breeds` and the bridge.
 
 ## One number's full journey
 

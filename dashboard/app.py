@@ -341,3 +341,8 @@ with st.expander("Data coverage — the full picture"):
         f"({rho_n('weight_mid_kg', 'life_span_mid_years')}). Three panels agreeing is a built-in proof "
         "the marts are coherent. Life span is the midpoint of each breed's published range, not a prediction."
     )
+
+# Freshness line, always visible: the wall-clock of the ingestion behind the data on screen, read
+# from mart_data_coverage (computed in dbt, not here — thin). On the hosted app this is the last cron
+# refresh, so it goes visibly stale if the nightly job stops.
+st.caption(f"Last refreshed {cov.last_refreshed_at:%Y-%m-%d %H:%M} UTC.")

@@ -137,6 +137,16 @@ dbt-duckdb routes to MotherDuck). The `prod` target isn't three targets; it's on
 `MOTHERDUCK_TOKEN` in the environment (and `run_pipeline.sh` `CREATE DATABASE IF NOT EXISTS`es it once,
 since MotherDuck doesn't auto-create on attach).
 
+**M10 — atomic gold updates (Write-Audit-Publish).** dbt materializes a model *then* tests it, so a
+failed test leaves the bad table live (only downstream skips); a mid-build crash into `md:dogs` also
+leaves it torn. So the **cron** builds gold into a **shadow schema** via `DBT_MARTS_SCHEMA=marts_next`
+(the `marts` `+schema` is `{{ var('marts_schema', 'marts') }}`, default `marts`), runs all 39 tests
+there, and then **`scripts/publish_motherduck.py`** swaps `main_marts_next → main_marts` inside **one
+transaction** (`CREATE OR REPLACE TABLE … AS SELECT *` per gold table; verified atomic on MotherDuck —
+`ALTER SCHEMA RENAME` is unimplemented). Only on full-green does live gold advance; `raw` + Elementary
+append every run regardless (history/trends, even a failed run records itself). CI/local leave
+`DBT_MARTS_SCHEMA` unset and build straight into `main_marts`, unchanged.
+
 ```bash
 # dev — iterate without touching the serving copy
 python ingestion/ingest.py --db dogs_dev.duckdb
@@ -631,7 +641,9 @@ on `size_class` is drift waiting to happen.
   **Top-N is presentation, not gold:** the mart holds every (class, tag) pair; the dashboard takes
   the top 3–5. Bake the cut into the model and you can't change it without a rebuild.
 - **`mart_data_coverage`** — grain: **one row**. `total_breeds, breeds_with_weight,
-  breeds_with_life_span, breeds_with_both, breeds_with_temperament, breeds_plotted_scatter`.
+  breeds_with_life_span, breeds_with_both, breeds_with_temperament, breeds_plotted_scatter,
+  breeds_excluded_scatter, last_refreshed_at` (the last = wall-clock UTC of the current partition's
+  ingestion, `max(loaded_at)` from `stg_breeds`, shown as the app's "Last refreshed" footer).
   **What every chart silently drops, stated as a fact the dashboard prints.** Measured today:
 
   | | breeds |

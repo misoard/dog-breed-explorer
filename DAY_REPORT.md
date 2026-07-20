@@ -956,3 +956,69 @@ Two steps live outside the repo, so they stay unticked on the same honesty rule 
 2. Deploy `app.py` on **Streamlit Community Cloud** with `MOTHERDUCK_TOKEN` + `DOGS_DB=md:dogs` as
    platform secrets → the public link. The *code* is done and the cloud read is verified; a hosted URL
    is only proven by a real deployment, which is mine to do.
+
+## M9 (Part C) — the dead man's switch: a run that never happened
+
+A live incident drove this one: one morning the scheduled cron simply wasn't in the Actions list. Not
+red, not cancelled — *absent*. That exposed a real hole in "how do I know the last run passed?": the
+Actions page can only show runs that **started**, so a run GitHub silently **drops** (best-effort cron
+does this under load) leaves no trace at all, and neither does the 60-day auto-disable of an idle
+scheduled workflow. Passive monitoring can't see a non-event. First instinct was to move the schedule
+off the top of the hour (`:17`) to dodge congestion — reverted, because it doesn't buy reliability at
+all: GitHub cron is best-effort at *every* minute, so the honest fix is **detecting** a miss, not
+picking a lucky slot.
+
+### The fix and the four things that make it correct, not just present
+A **dead man's switch** (Healthchecks.io) inverts the logic: the job pings a monitor, and the *monitor*
+pages *me* if the expected daily ping doesn't arrive. The subtleties are what make it real:
+- **Success-gating is load-bearing.** The success ping fires **only** on a fully-green run (`if:
+  success()`), never `if: always()`. Ping unconditionally and a failed run reports "alive" — you've
+  built a switch that *lies*, a green monitor over a broken pipeline. Three signals — `/start` (first
+  step, so duration is measured), the bare success URL (last step, gated), and `/fail` (in the
+  `if: failure()` step) — give missing-run detection *and* duration *and* an explicit fail, same effort
+  as one.
+- **The ping URL is a secret** (`HEALTHCHECKS_URL`), never in the YAML — anyone holding it can forge a
+  healthy ping and keep the monitor falsely green. Same discipline as `DOG_API_KEY` / `MOTHERDUCK_TOKEN`.
+- **Wide grace on purpose.** GitHub cron is routinely 15-30 min late (normal, not a miss). A tight
+  window would cry wolf, a flaky page gets muted, and a muted alert is no alert — the "wallpaper" rule
+  (§3) applied to paging. Grace a few hours.
+- **It's inert until wired.** Every ping step is gated on `env.HEALTHCHECKS_URL != ''`, so it ships
+  harmless and turns on when I create the check and add the secret.
+
+That closes the gap `scheduled.yml` had flagged honestly for milestones ("a red cron nobody sees isn't
+running") — and now covers the strictly-worse case it *hadn't*: a cron nobody sees because it never ran.
+Left for later: Elementary's `edr monitor` to page on a *specific failing test* rather than a failed run.
+
+## M10 — atomic gold updates: the one that made "Last refreshed" honest
+
+Adding the freshness caption exposed a deeper bug I'd have shipped without noticing: **the timestamp
+could lie.** dbt materializes a model and *then* tests it, so a failed test leaves the bad table live
+(only *downstream* is skipped); and building straight into `md:dogs` (the M9 plan) leaves it torn on a
+mid-build crash. So the dashboard could show a fresh "Last refreshed" over a mix of new and stale gold —
+the freshness column and honesty were only half-built.
+
+### The pattern, and the one thing I refused to regress
+Write-Audit-Publish is the textbook fix, but the naive version (build to a throwaway local file,
+republish everything) would **drop the two things I'd just called essential** — the durable `raw`
+history and the Elementary trends, both of which accumulate in `md:dogs`. So the design splits by write
+pattern: `raw` (partition append) and `main_elementary` (hook append) keep landing in `md:dogs` every
+run — a *failed* run still records itself there, which is observability working — and **only the gold
+marts**, which are full-replaced, get the shadow-schema swap. The cron builds gold into `main_marts_next`
+(a `marts_schema` dbt var), tests it, and `publish_motherduck.py` swaps it into live `main_marts` in one
+transaction, only on full green.
+
+### Verify-first, because the mechanism was an unknown
+I didn't wire anything until the load-bearing question was settled. `ALTER SCHEMA … RENAME` — the
+obvious swap — turned out to be **unimplemented in DuckDB** (verified, not assumed). The working
+primitive is a transactional `CREATE OR REPLACE TABLE … AS SELECT *` per table, which I proved atomic
+first on local DuckDB and then **on MotherDuck itself** (throwaway `md:` db, forced a failure mid-swap,
+asserted the live schema was byte-identical — full rollback). Only then Steps 1-5.
+
+### The proof that it works, end to end
+On a throwaway `md:wap_e2e`: a **success** run built the shadow, swapped 7 tables into live gold
+(627 breeds), dropped the shadow. An **injected-failure** run (a temp always-failing test) exited
+non-zero at Phase A → Phase B skipped → **live "Last refreshed" unchanged while raw's `loaded_at`
+advanced.** That last line is the whole point made concrete: raw re-ingested, gold did *not*, so the
+timestamp reflects the last *successful* publish and can never show fresh-over-stale. `dogs` was never
+touched. The publish list is discovered from the shadow schema via `information_schema` (scoped to the
+connected db + base tables), so adding a mart tomorrow flows through with no code change.
