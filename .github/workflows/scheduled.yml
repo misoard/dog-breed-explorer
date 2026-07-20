@@ -47,14 +47,13 @@ jobs:
       # cloud store instead of a local file (M9 Part B). ingest.py writes raw there,
       # dbt builds gold + Elementary there, and it persists past the VM — the durable
       # store the hosted dashboard reads.
+      # M10 (Write-Audit-Publish): because DBT_DUCKDB_PATH is an `md:` path, run_pipeline.sh builds the
+      # gold marts into a SHADOW schema (main_marts_next), runs all 39 tests there, and only on full
+      # success atomically swaps it into live main_marts — all inside the pipeline step below. A failed
+      # test never leaves torn/stale gold live. Nothing extra to set here: atomicity follows from the
+      # md: destination, so a hand-run `DBT_DUCKDB_PATH=md:dogs ./run_pipeline.sh` is atomic too.
       DBT_DUCKDB_PATH: md:dogs
       DBT_TARGET: prod
-      # M10 (Write-Audit-Publish): the cron builds the gold marts into a SHADOW schema
-      # (main_marts_next), runs all 39 tests against it, and only then atomically swaps it into
-      # live main_marts (Phase B). So a failed test never leaves torn/stale gold live, and the
-      # dashboard's "Last refreshed" can't lie. Only the CRON sets this — ci.yml and local builds
-      # leave it unset and build straight into main_marts, unchanged.
-      DBT_MARTS_SCHEMA: marts_next
       # Dead-man's-switch ping URL (Healthchecks.io). A SECRET like the others — anyone
       # holding the URL can forge a "healthy" ping and keep the monitor falsely green, so
       # it never appears literally in this file (same discipline as DOG_API_KEY /
@@ -82,18 +81,19 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt
 
-      # PHASE A — the gate. Ingest raw into md:dogs, build the gold into the SHADOW schema
-      # (DBT_MARTS_SCHEMA=marts_next, job env), and run all 39 tests there. raw + Elementary land
-      # in md:dogs directly (they append — history/trends, even a failed run records itself). If any
-      # test fails, this step fails and Phase B is skipped → live main_marts stays yesterday's.
-      - name: Phase A — ingest + build gold into shadow + test
+      # The whole pipeline, Write-Audit-Publish and all: ingest raw into md:dogs, build gold into the
+      # shadow schema + run all 39 tests, then (because the destination is md:) atomically swap the
+      # validated shadow into live main_marts. raw + Elementary append directly (history/trends, even a
+      # failed run records itself). If any test — or the swap — fails, this step exits non-zero, live
+      # main_marts stays yesterday's, and no success heartbeat pings → the dead man's switch fires.
+      - name: Run the pipeline (ingest, build, atomic publish)
         env:
           # Without this the cron 403s every night. Repo Settings > Secrets and
           # variables > Actions > New repository secret.
           DOG_API_KEY: ${{ secrets.DOG_API_KEY }}
           # The cron writes to md:dogs, so it needs the MotherDuck token (same secrets mechanism as
-          # DOG_API_KEY). ci.yml does NOT set this — its local build never touches the cloud. DuckDB
-          # reads MOTHERDUCK_TOKEN from the environment automatically when it opens an md: connection.
+          # DOG_API_KEY) — for both the build and the publish swap. ci.yml does NOT set this; its local
+          # build never touches the cloud. DuckDB reads MOTHERDUCK_TOKEN from the env for md: paths.
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: ./scripts/run_pipeline.sh
 
@@ -103,15 +103,6 @@ jobs:
       - name: Surface dbt warnings
         if: always()
         run: python scripts/annotate_warns.py
-
-      # PHASE B — publish. Runs ONLY if Phase A passed (default if: success()). Atomically swaps the
-      # validated shadow gold (main_marts_next) into live main_marts inside one transaction, then
-      # drops the shadow. On any failure the swap rolls back (verified atomic on MotherDuck), live is
-      # untouched, and — because this step failed — no success heartbeat pings → the dead man fires.
-      - name: Phase B — publish (atomic swap into live gold)
-        env:
-          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
-        run: python scripts/publish_motherduck.py --drop-shadow
 
       # Dead-man's-switch, signal 2/3 — SUCCESS. ONLY on a fully-green run (if: success()).
       # This gate is load-bearing: pinging unconditionally (if: always()) would let a

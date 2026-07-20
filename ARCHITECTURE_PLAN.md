@@ -647,6 +647,15 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
     Phase B publish → heartbeat order), DECISIONS §2/§5/§6, SPEC (the shadow schema + swap), DAY_REPORT.
   - **Supersedes** the M9 "cron sets `DBT_DUCKDB_PATH=md:dogs` → build straight to cloud" step — that
     direct-to-cloud build is exactly what leaves `md:dogs` torn on a mid-build failure.
+  - **Refined (post-M10 follow-up):** the WAP wiring moved OUT of `scheduled.yml` and INTO
+    `run_pipeline.sh` — atomicity now follows the **destination**, not the caller. An `md:` path builds
+    gold into the shadow and swaps internally (a stage-3 publish); so a hand-run
+    `DBT_DUCKDB_PATH=md:dogs ./run_pipeline.sh` is atomic too, and the cron drops both `DBT_MARTS_SCHEMA`
+    and the separate Phase B step (the one "Run the pipeline" step does it all). This also fixed a bug
+    the `--vars` array hid: an empty array under `set -u` is "unbound variable" on macOS's bash 3.2 (CI's
+    bash 5.x tolerated it), so a local `./run_pipeline.sh` would have failed — replaced with two explicit
+    build branches. Verified: local → `main_marts` direct, `PASS=82`, no swap; `md:` → shadow + swap,
+    627 live.
 
 - [x] **Docs sync — every `.md` except `DECISIONS.md` (that one is yours).** M10's close-out: reconcile
       the docs that describe the cron / gold-write path.

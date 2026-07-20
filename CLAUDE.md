@@ -142,13 +142,15 @@ range".
 - **staging = view in `main_staging`; marts = table in `main_marts`**; set in `dbt_project.yml`
   (`+schema: staging` concatenates onto `main`), never per model. Views for a parse pass with one
   consumer; tables for what a dashboard reads repeatedly.
-- **M10 — the cron publishes gold ATOMICALLY (Write-Audit-Publish); don't "simplify" it away.** The
-  marts `+schema` is `{{ var('marts_schema', 'marts') }}`; the cron sets `DBT_MARTS_SCHEMA=marts_next`
-  so gold builds into a **shadow schema**, is tested there, and `scripts/publish_motherduck.py` swaps
-  `main_marts_next → main_marts` in **one transaction** (only on full-green). `raw` + `main_elementary`
-  **append** to `md:dogs` every run and are never dropped (history/trends). CI/local leave the var
-  unset → build straight into `main_marts`. Why: dbt materializes then tests, so building direct to
-  cloud would leave torn/stale gold live and make "Last refreshed" lie. See ARCHITECTURE_PLAN.md M10.
+- **M10 — writing gold to `md:` is ATOMIC (Write-Audit-Publish); don't "simplify" it away.** Atomicity
+  is a property of the **destination**, not the caller: `run_pipeline.sh` sees an `md:` path and builds
+  gold into a **shadow schema** (`marts +schema` is `{{ var('marts_schema', 'marts') }}`, passed
+  `marts_next`), tests it, then `scripts/publish_motherduck.py` swaps `main_marts_next → main_marts` in
+  **one transaction** (only on full-green) — so the cron AND a hand-run `DBT_DUCKDB_PATH=md:dogs
+  ./run_pipeline.sh` are both atomic. A **local file** builds straight into `main_marts` (single writer,
+  no swap), so CI/local are unchanged. `raw` + `main_elementary` **append** to `md:dogs` every run and
+  are never dropped (history/trends). Why: dbt materializes then tests, so building direct to cloud
+  would leave torn/stale gold live and make "Last refreshed" lie. See ARCHITECTURE_PLAN.md M10.
 - **LLM bonus = Pattern A:** `enrich.py` reads `stg_breeds` → LLM → writes `raw.breed_enrichment`;
   `dim_breeds` **LEFT JOIN**s it via `source()`. Order: ingest → dbt staging → enrich → dbt marts.
   dbt never makes a network call.

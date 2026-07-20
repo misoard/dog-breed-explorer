@@ -342,7 +342,11 @@ with st.expander("Data coverage — the full picture"):
         "the marts are coherent. Life span is the midpoint of each breed's published range, not a prediction."
     )
 
-# Freshness line, always visible: the wall-clock of the ingestion behind the data on screen, read
+# Freshness line, shown WHEN PRESENT: the wall-clock of the ingestion behind the data on screen, read
 # from mart_data_coverage (computed in dbt, not here — thin). On the hosted app this is the last cron
-# refresh, so it goes visibly stale if the nightly job stops.
-st.caption(f"Last refreshed {cov.last_refreshed_at:%Y-%m-%d %H:%M} UTC.")
+# refresh, so it goes visibly stale if the nightly job stops. Guarded with .get() + notna so the app
+# degrades gracefully (just omits the line) when the cloud gold predates this column or the value is
+# null, instead of crashing — the served store may be older than a schema change until the cron reruns.
+_last_refreshed = cov.get("last_refreshed_at")
+if _last_refreshed is not None and pd.notna(_last_refreshed):
+    st.caption(f"Last refreshed {_last_refreshed:%Y-%m-%d %H:%M} UTC.")
