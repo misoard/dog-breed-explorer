@@ -1,11 +1,13 @@
 """
 M10 — Write-Audit-Publish, the PUBLISH phase: atomically swap the validated shadow gold
-schema into the live one, in MotherDuck.
+schema into the live one — in ANY DuckDB database, local file or MotherDuck.
 
 THE PROBLEM THIS EXISTS TO CLOSE: dbt materializes a model and THEN tests it, so a failed
-test leaves the bad table live (only *downstream* is skipped); building straight into
-`md:dogs` also leaves it torn on a mid-build crash. Either way the dashboard — and the
-`last_refreshed_at` it prints — can show a mix of fresh and stale gold.
+test leaves the bad table live (only *downstream* is skipped); building straight into the
+live schema also leaves it torn on a mid-build crash. Either way the dashboard — and the
+`last_refreshed_at` it prints — can show a mix of fresh and stale gold. This is true for a
+served `md:dogs` AND for the local `dogs.duckdb` the Streamlit demo reads live, so the swap
+runs on the PROD TARGET regardless of destination (dev builds direct — nothing serves it).
 
 THE SHAPE (Write-Audit-Publish):
   - Phase A (the cron): `dbt build --vars '{marts_schema: marts_next}'` builds + TESTS the
@@ -13,7 +15,7 @@ THE SHAPE (Write-Audit-Publish):
   - Phase B (this script, run only if A passed — GitHub steps are sequential): replaces every
     table in live `main_marts` with its validated shadow copy, inside ONE transaction. A
     mid-swap failure rolls the whole thing back, so the dashboard never sees a torn mix.
-    Verified atomic on MotherDuck (ARCHITECTURE_PLAN M10 Step 0).
+    Verified atomic on both local DuckDB and MotherDuck (ARCHITECTURE_PLAN M10 Step 0).
 
 WHAT THIS DOES NOT TOUCH: `raw.breeds` and `main_elementary`. They APPEND during the build
 and must keep their history / trends — a failed run still records itself there (the partition
@@ -28,9 +30,10 @@ Any error exits non-zero → the cron step fails → no success heartbeat pings 
 switch fires. That is the intended failure path.
 
 Usage:
-    python scripts/publish_motherduck.py                     # md:dogs, main_marts_next -> main_marts
-    python scripts/publish_motherduck.py --drop-shadow       # ...and drop the shadow after
-    python scripts/publish_motherduck.py --database md:wap_test --shadow main_marts_next --live main_marts
+    python scripts/publish_gold.py                           # md:dogs, main_marts_next -> main_marts
+    python scripts/publish_gold.py --drop-shadow             # ...and drop the shadow after
+    python scripts/publish_gold.py --database dogs.duckdb --drop-shadow   # local prod, same swap
+    python scripts/publish_gold.py --database md:wap_test --shadow main_marts_next --live main_marts
 """
 
 from __future__ import annotations

@@ -29,8 +29,20 @@ on:
     # the entire reason there's no Airflow here (DECISIONS.md §6).
     - cron: '0 2 * * *'
   # So the cron can be exercised on demand instead of waiting until 02:00 —
-  # otherwise the only way to test a change to it is to wait a day.
+  # otherwise the only way to test a change to it is to wait a day. The two inputs are
+  # TEST-ONLY chaos switches (default false): they enable a var-gated dbt test
+  # (tests/debug_force_*.sql) so you can exercise the failure / warn paths on a REAL cron
+  # run — see the alert channel fire and the observability report record it. Off = normal.
   workflow_dispatch:
+    inputs:
+      force_test_failure:
+        description: 'TEST ONLY: force an ERROR-severity dbt test to fail (skips the swap, fires the /fail alert, shows as fail in observability)'
+        type: boolean
+        default: false
+      force_test_warn:
+        description: 'TEST ONLY: force a WARN-severity dbt test (run stays green + publishes; shows as a warn, does NOT fire the alert)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,11 +59,12 @@ jobs:
       # cloud store instead of a local file (M9 Part B). ingest.py writes raw there,
       # dbt builds gold + Elementary there, and it persists past the VM — the durable
       # store the hosted dashboard reads.
-      # M10 (Write-Audit-Publish): because DBT_DUCKDB_PATH is an `md:` path, run_pipeline.sh builds the
-      # gold marts into a SHADOW schema (main_marts_next), runs all 39 tests there, and only on full
-      # success atomically swaps it into live main_marts — all inside the pipeline step below. A failed
-      # test never leaves torn/stale gold live. Nothing extra to set here: atomicity follows from the
-      # md: destination, so a hand-run `DBT_DUCKDB_PATH=md:dogs ./run_pipeline.sh` is atomic too.
+      # M10 (Write-Audit-Publish): because DBT_TARGET is `prod`, run_pipeline.sh builds the gold marts
+      # into a SHADOW schema (main_marts_next), runs all 39 tests there, and only on full success
+      # atomically swaps it into live main_marts — all inside the pipeline step below. A failed test
+      # never leaves torn/stale gold live. Atomicity follows from the prod TARGET, not the md path: the
+      # same guard protects the local dogs.duckdb demo and CI (which now exercises the swap on every
+      # PR). `--target dev` alone stays direct — the fast iteration loop, nothing served.
       DBT_DUCKDB_PATH: md:dogs
       DBT_TARGET: prod
       # Dead-man's-switch ping URL (Healthchecks.io). A SECRET like the others — anyone
@@ -95,6 +108,11 @@ jobs:
           # DOG_API_KEY) — for both the build and the publish swap. ci.yml does NOT set this; its local
           # build never touches the cloud. DuckDB reads MOTHERDUCK_TOKEN from the env for md: paths.
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          # TEST-ONLY: empty on a scheduled run (inputs are null), "true"/"false" on a manual dispatch.
+          # run_pipeline.sh forwards them as dbt vars, which enable tests/debug_force_*.sql. Harmless
+          # off: an empty or "false" value leaves those tests disabled (not registered), count stays 39.
+          FORCE_TEST_FAILURE: ${{ inputs.force_test_failure }}
+          FORCE_TEST_WARN: ${{ inputs.force_test_warn }}
         run: ./scripts/run_pipeline.sh
 
       # The distributional guards (warn) are the reason this cron is worth having:
