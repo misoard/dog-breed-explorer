@@ -94,7 +94,7 @@ local file, or MotherDuck — with no change to a line of model SQL.
 | Warehouse | **DuckDB** (local file) → **MotherDuck** (hosted, same engine) | analytical/OLAP, zero-ops, native JSON; the cron persists to MotherDuck so gold survives the VM |
 | Transform / test | **dbt Core** + `dbt-duckdb` | SELECT models, `ref()` DAG, 39 tests, contracts, dev/prod targets |
 | Observability | **Elementary** (dbt package) | captures every test/run result durably; day-over-day health once in MotherDuck |
-| CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ 02:00 UTC |
+| CI/CD + schedule | **GitHub Actions** + **Healthchecks** | tests + build on every PR; daily cron @ 02:00 UTC + alert channel |
 | Dashboard | **Streamlit** + Altair | thin reader of gold marts (local file, or MotherDuck when hosted) |
 
 **Right-sized on purpose:** no Airflow for one daily job, and DuckDB — local, or the same engine
