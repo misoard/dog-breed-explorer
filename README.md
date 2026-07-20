@@ -217,23 +217,37 @@ access see the real state.)*
 The local pipeline is complete on its own; the optional cloud path adds two things on top, both **opt-in and off the
 default path**:
 
-- **Observability — [Elementary](https://www.elementary-data.com/).** The project's one external dbt
-  package, added for *observability infra, not test logic* (DECISIONS §3). An automatic on-run-end
-  hook captures every test result (status, timing, the warn/error split for all 39 tests) into
-  `main_elementary` tables on each `dbt build`; `./scripts/observability_report.sh` renders an HTML
-  health dashboard from them (regenerable, not committed — same rule as the dbt docs graph).
-- **Cloud serving — [MotherDuck](https://motherduck.com).** The single durable-storage unlock. The
-  **cron** (only) sets `DBT_DUCKDB_PATH=md:dogs`, so it builds gold + Elementary into hosted DuckDB
-  that persists past the VM — while CI PR builds stay local/ephemeral, so a PR never clobbers served
-  data. The dashboard reads that store when `DOGS_DB=md:dogs` is set (else the local file). **Zero
-  model SQL changed** — only the connection string. Deploying `app.py` on Streamlit Community Cloud
-  with the token as a platform secret turns the delivery into a live **link**.
+- **Observability — [Elementary](https://www.elementary-data.com/)** *(unchanged by the cloud path)*.
+  The project's one external dbt package, added for *observability infra, not test logic* (DECISIONS §3).
+  An automatic on-run-end hook captures every test result (status, timing, the warn/error split for all
+  39 tests) into `main_elementary` tables on **each `dbt build`** — local or cloud;
+  `./scripts/observability_report.sh` renders an HTML health dashboard from whichever store you point it
+  at (regenerable, not committed).
+- **Cloud serving — [MotherDuck](https://motherduck.com), with atomic gold updates.** The
+  durable-storage unlock: point `DBT_DUCKDB_PATH` at `md:dogs` and the pipeline builds gold + Elementary
+  into hosted DuckDB that persists past the VM. **Writing gold to the cloud is atomic** (Write-Audit-Publish,
+  M10): `run_pipeline.sh` sees the `md:` destination, builds gold into a **shadow schema**, runs all 39
+  tests, and only on **full green** swaps it into live `main_marts` in one transaction — so a failed test
+  never leaves torn/stale gold live, and the dashboard's "Last refreshed" can't lie. A **local file**
+  builds gold **direct** (single writer, no swap needed). The dashboard reads `md:dogs` when
+  `DOGS_DB=md:dogs`, else the local file. **Zero model SQL changed** — only the connection string.
+
+**Commands** — the destination decides everything (a local *file* path builds direct; an `md:` path is atomic):
 
 ```bash
-# build/serve the CLOUD store (needs MOTHERDUCK_TOKEN in .env):
-DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh    # cron does this nightly
-DOGS_DB=md:dogs streamlit run dashboard/app.py        # dashboard reads the cloud
-./scripts/observability_report.sh md:dogs             # observability report from the cloud
+# --- LOCAL demo (nothing touches the cloud) --------------------------------------
+./scripts/run_pipeline.sh                        # ingest -> build ./dogs.duckdb (gold direct into main_marts)
+streamlit run dashboard/app.py                   # dashboard reads the local file (DOGS_DB unset)
+./scripts/observability_report.sh ./dogs.duckdb  # test-health report from the local build
+
+# --- REFRESH the cloud (ATOMIC; the cron does this nightly) -----------------------
+# run_pipeline.sh self-loads .env for MOTHERDUCK_TOKEN; md: => shadow build -> test -> swap on green
+DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh
+
+# --- READ the cloud --------------------------------------------------------------
+set -a; source .env; set +a                      # streamlit does NOT self-load .env; export the token first
+DOGS_DB=md:dogs streamlit run dashboard/app.py   # dashboard reads md:dogs
+./scripts/observability_report.sh md:dogs        # observability report from the cloud (last cron run's history)
 ```
 
 **Live at → https://dog-breed-explorer-case-study.streamlit.app/** (reads `md:dogs` from MotherDuck;

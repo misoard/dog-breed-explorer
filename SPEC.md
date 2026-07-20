@@ -139,13 +139,15 @@ since MotherDuck doesn't auto-create on attach).
 
 **M10 — atomic gold updates (Write-Audit-Publish).** dbt materializes a model *then* tests it, so a
 failed test leaves the bad table live (only downstream skips); a mid-build crash into `md:dogs` also
-leaves it torn. So the **cron** builds gold into a **shadow schema** via `DBT_MARTS_SCHEMA=marts_next`
-(the `marts` `+schema` is `{{ var('marts_schema', 'marts') }}`, default `marts`), runs all 39 tests
-there, and then **`scripts/publish_motherduck.py`** swaps `main_marts_next → main_marts` inside **one
-transaction** (`CREATE OR REPLACE TABLE … AS SELECT *` per gold table; verified atomic on MotherDuck —
-`ALTER SCHEMA RENAME` is unimplemented). Only on full-green does live gold advance; `raw` + Elementary
-append every run regardless (history/trends, even a failed run records itself). CI/local leave
-`DBT_MARTS_SCHEMA` unset and build straight into `main_marts`, unchanged.
+leaves it torn. So atomicity follows the **destination**: when `DBT_DUCKDB_PATH` is an `md:` path,
+`run_pipeline.sh` builds gold into a **shadow schema** (the `marts` `+schema` is
+`{{ var('marts_schema', 'marts') }}`, passed `marts_next`), runs all 39 tests there, and then
+**`scripts/publish_motherduck.py`** swaps `main_marts_next → main_marts` inside **one transaction**
+(`CREATE OR REPLACE TABLE … AS SELECT *` per gold table; verified atomic on MotherDuck — `ALTER SCHEMA
+RENAME` is unimplemented). So the cron *and* a hand-run `DBT_DUCKDB_PATH=md:dogs ./run_pipeline.sh` are
+both atomic. Only on full-green does live gold advance; `raw` + Elementary append every run regardless
+(history/trends, even a failed run records itself). A **local file** path builds straight into
+`main_marts` (single writer, no swap), so CI/local are unchanged.
 
 ```bash
 # dev — iterate without touching the serving copy

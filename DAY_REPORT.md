@@ -1022,3 +1022,14 @@ advanced.** That last line is the whole point made concrete: raw re-ingested, go
 timestamp reflects the last *successful* publish and can never show fresh-over-stale. `dogs` was never
 touched. The publish list is discovered from the shadow schema via `information_schema` (scoped to the
 connected db + base tables), so adding a mart tomorrow flows through with no code change.
+
+### Refinement — atomicity is a property of the destination, not the caller
+The first cut put WAP in the *workflow* (a shadow env var + a separate Phase B step), which meant a
+hand-run `DBT_DUCKDB_PATH=md:dogs ./run_pipeline.sh` — the exact command I'd use to seed or refresh the
+cloud by hand — **bypassed the atomic swap** and wrote gold straight to live. That's a footgun: the
+protection belonged to the cron, not to "writing to `md:dogs`." So I moved WAP *into* `run_pipeline.sh`:
+an `md:` destination builds into the shadow and swaps internally, a local file builds direct. Now every
+path to the cloud is atomic, and `scheduled.yml` collapses to one "Run the pipeline" step. Verifying it
+also caught a bug the first cut shipped: the `--vars` **array** form, empty on the local branch, is an
+"unbound variable" under `set -u` on **macOS's bash 3.2** — CI's bash 5.x tolerated it, so it passed CI
+but a local `./run_pipeline.sh` would have died. Two explicit build branches, no array, fixed both.

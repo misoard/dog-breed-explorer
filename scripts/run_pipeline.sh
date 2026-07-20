@@ -109,17 +109,28 @@ python "$REPO_ROOT/ingestion/ingest.py" --db "$DBT_DUCKDB_PATH"
 #    deps." It's idempotent and fast when already installed (checks the lock), so
 #    running it every time costs nothing locally and is required in CI. One place,
 #    shared by all three callers — the same reason the pipeline lives in this script.
-# M10 (Write-Audit-Publish): when DBT_MARTS_SCHEMA is set, build the gold marts into that
-# SHADOW schema instead of the live one, so the cron can test the whole gold layer before an
-# atomic swap (scripts/publish_motherduck.py). Unset by default, so CI and a local run build
-# straight into main_marts as before — only the cron sets it (DBT_MARTS_SCHEMA=marts_next).
-# Array form so the space in "{marts_schema: ...}" is passed as one argument, not word-split.
-DBT_VARS=()
-if [[ -n "${DBT_MARTS_SCHEMA:-}" ]]; then
-  DBT_VARS=(--vars "{marts_schema: $DBT_MARTS_SCHEMA}")
-fi
-
-echo "--- [2/2] dbt deps + build --target $DBT_TARGET ${DBT_VARS[*]}"
+# M10 (Write-Audit-Publish): atomicity is a property of the DESTINATION, not the caller. Writing gold
+# to the CLOUD store must be atomic — dbt materializes a model then tests it, so building straight into
+# md:dogs would leave torn/stale gold live on a failed test. So for an `md:` destination we build the
+# gold into a SHADOW schema (main_marts_next), test it, then swap it into live main_marts in ONE
+# transaction (stage 3, only on full green). A LOCAL file needs none of this (single writer,
+# read-after-build), so it builds straight into main_marts. This means `DBT_DUCKDB_PATH=md:dogs
+# ./run_pipeline.sh` is atomic whether it's the cron OR a hand-run demo refresh; CI/local (file paths)
+# are unchanged. Two explicit branches, NOT a `--vars` array: an empty array under `set -u` is an
+# "unbound variable" on macOS's bash 3.2, and the "{marts_schema: ...}" space must survive as one arg.
+echo "--- [2/2] dbt deps + build --target $DBT_TARGET"
 cd "$REPO_ROOT/dbt"
 dbt deps
-dbt build --target "$DBT_TARGET" "${DBT_VARS[@]}"
+if [[ "$DBT_DUCKDB_PATH" == md:* ]]; then
+  dbt build --target "$DBT_TARGET" --vars "{marts_schema: marts_next}"   # cloud: gold -> shadow schema
+else
+  dbt build --target "$DBT_TARGET"                                        # local: gold -> main_marts direct
+fi
+
+# 3. Publish (CLOUD ONLY): atomically swap the validated shadow gold into live main_marts. A local
+#    build already wrote main_marts directly, so this is skipped. Any error here exits non-zero (set
+#    -e), which — in the cron — means no success heartbeat pings and the dead man's switch fires.
+if [[ "$DBT_DUCKDB_PATH" == md:* ]]; then
+  echo "--- [3/3] publish: atomic swap main_marts_next -> main_marts in $DBT_DUCKDB_PATH"
+  python "$REPO_ROOT/scripts/publish_motherduck.py" --database "$DBT_DUCKDB_PATH" --drop-shadow
+fi
