@@ -16,7 +16,11 @@ hosted dashboard) layered on top without changing a line of model SQL.
 
 ---
 
-## What it answers
+## The goal of the study case & what the dashboard answers
+
+The goal is to build and ship a public dog breed explorer. The Data
+Platform team should build a curated analytics layer exposing facts about dog breeds (life span, size class,
+temperament, and so on) and set up an automated pipeline that refreshes the data daily. 
 
 The brief suggests four questions and asks for at least two. This dashboard answers **two of them**, and
 adds a temperament angle of its own, in the dashboard's own words:

@@ -824,6 +824,8 @@ happened at the *design* layer, in the spec or the live app, never as a rebuild 
 - The dashboard is **local-only** by design (not in CI). The README screenshots are chart *exports*; we
   tried a full-page Playwright capture and reverted it as not worth a 93 MB browser for a POC.
 
+## Day 3 — 2026-07-19 · M9: observability (Part A), durable storage (Part B), the cron dead-man's switch (Part C)
+
 ## M9 (Part A) — observability, the local half: one package, and the discipline of stopping there
 
 The brief offers an observability bonus ("extended tests wired to an alert channel"), and it also says
@@ -988,6 +990,8 @@ pages *me* if the expected daily ping doesn't arrive. The subtleties are what ma
 That closes the gap `scheduled.yml` had flagged honestly for milestones ("a red cron nobody sees isn't
 running") — and now covers the strictly-worse case it *hadn't*: a cron nobody sees because it never ran.
 Left for later: Elementary's `edr monitor` to page on a *specific failing test* rather than a failed run.
+
+## Day 4 — 2026-07-20 · M10: atomic gold updates (Write-Audit-Publish)
 
 ## M10 — atomic gold updates: the one that made "Last refreshed" honest
 
