@@ -15,8 +15,7 @@ reliable data is the key to make all downstream tasks work. Therefore, I insiste
 - **storage durability**: without over-engineering it, I wanted the scheduled cron to persist data
   because this is the first step for observability and durability.
 - **atomicity**: A dbt test that fails leaves a bad table in place and only skips downstream. We end
-  up with an intermediate state that must not be promoted to prod data. That's why I decided *for
-  the scheduled cron* to run dbt tests on a shadow schema and then swap it to prod data on **full**
+  up with an intermediate state where some gold data can be updated and others are not. It must not be promoted to prod data. That's why I decided *for the prod path (CI, scheduled cron, local prod) * to run dbt tests on a shadow schema and then swap it to prod data on **full**
   success. This ensures that all gold data shown in the live dashboard pass **all tests**.
 I designed the architecture first organized in milestones and used Claude Code as the implementer
 against it, so every choice below is mine to defend. One paragraph per layer: what I chose, why over
