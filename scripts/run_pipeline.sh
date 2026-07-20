@@ -109,7 +109,17 @@ python "$REPO_ROOT/ingestion/ingest.py" --db "$DBT_DUCKDB_PATH"
 #    deps." It's idempotent and fast when already installed (checks the lock), so
 #    running it every time costs nothing locally and is required in CI. One place,
 #    shared by all three callers — the same reason the pipeline lives in this script.
-echo "--- [2/2] dbt deps + build --target $DBT_TARGET"
+# M10 (Write-Audit-Publish): when DBT_MARTS_SCHEMA is set, build the gold marts into that
+# SHADOW schema instead of the live one, so the cron can test the whole gold layer before an
+# atomic swap (scripts/publish_motherduck.py). Unset by default, so CI and a local run build
+# straight into main_marts as before — only the cron sets it (DBT_MARTS_SCHEMA=marts_next).
+# Array form so the space in "{marts_schema: ...}" is passed as one argument, not word-split.
+DBT_VARS=()
+if [[ -n "${DBT_MARTS_SCHEMA:-}" ]]; then
+  DBT_VARS=(--vars "{marts_schema: $DBT_MARTS_SCHEMA}")
+fi
+
+echo "--- [2/2] dbt deps + build --target $DBT_TARGET ${DBT_VARS[*]}"
 cd "$REPO_ROOT/dbt"
 dbt deps
-dbt build --target "$DBT_TARGET"
+dbt build --target "$DBT_TARGET" "${DBT_VARS[@]}"

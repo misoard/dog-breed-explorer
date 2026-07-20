@@ -12,7 +12,7 @@ milestone before moving on. The commit history should mirror these milestones.
 | Transform/model/test | **dbt Core** (`dbt-duckdb`) | SELECT-based models, `ref()` DAG, tests, docs, dev/prod targets |
 | Version control | **GitHub** | incremental commits, secrets out of repo |
 | CI/CD | **GitHub Actions** | test+build on PR, scheduled run on merge |
-| Orchestration | **Actions cron @ ~02:00 UTC** | one daily job — Airflow would be overkill (deliberate) |
+| Orchestration | **Actions cron @ 02:00 UTC** | one daily job — Airflow would be overkill (deliberate) |
 | Dashboard | **Streamlit** (or Evidence.dev) | thin reader of gold marts; export PDF/screenshots |
 | Bonus | LLM enrichment | free-text → structured column, evaluated |
 
@@ -32,7 +32,7 @@ milestone before moving on. The commit history should mirror these milestones.
    │   ▼                                      │                      │
    │ MARTS / gold (dim_breeds + aggregates)   │──────────────────────┘
    └─────────────────────────────────────────┘
-   Scheduled by GitHub Actions cron @ ~02:00 UTC.  Dashboard never triggers the pipeline.
+   Scheduled by GitHub Actions cron @ 02:00 UTC.  Dashboard never triggers the pipeline.
 ```
 
 Key point to articulate in the debrief: the **pipeline** builds the gold layer daily; the
@@ -118,7 +118,7 @@ dog-breed-explorer/
 └─ .github/
    └─ workflows/
       ├─ ci.yml                  # on PR: install, dbt build, dbt test (visible status/badge)
-      └─ scheduled.yml           # cron ~02:00 UTC: ingest -> dbt build
+      └─ scheduled.yml           # cron 02:00 UTC: ingest -> dbt build
 
 Committed for transparency: exploration/ code + reports (shows I profiled first). Gitignored: .env,
 the .duckdb file, dbt target/, and exploration/raw_breeds.json (source data, regenerable by running
@@ -364,13 +364,12 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       future badge has a default-branch run to report; `concurrency` cancels superseded runs).
       Parses with the right triggers/steps. The **pipeline** it runs is proven (below); the
       **trigger** is not, until a PR runs it.
-- [ ] Cron @ ~02:00 UTC: ingest → `dbt build --target prod` → tests → **discard the warehouse**.
+- [ ] Cron @ 02:00 UTC: ingest → `dbt build --target prod` → tests → **discard the warehouse**.
       **CI proves the pipeline; it does not serve it** (DECISIONS.md §5) — the run is a health check
       with a real API call attached, which is what catches the API changing shape or the key
       expiring. Not a deployment; say so out loud rather than letting it look like an oversight.
-      → **BUILT, not verified:** `.github/workflows/scheduled.yml` (cron `17 2 * * *` — ~02:17 UTC,
-      off the top of the hour to dodge the `:00` congestion that lags Actions cron by hours; DECISIONS §6 +
-      `workflow_dispatch`, so the cron can be exercised on demand instead of waiting until 02:17).
+      → **BUILT, not verified:** `.github/workflows/scheduled.yml` (cron `0 2 * * *` +
+      `workflow_dispatch`, so the cron can be exercised on demand instead of waiting until 02:00).
       No artifact upload — the warehouse dies with the VM, on purpose.
 - [x] **`DOG_API_KEY` as an Actions secret** — the cron 403s without it. Nothing else is secret.
       → **Confirmed by me (Mathieu) — NOT machine-verifiable from the repo.** This tick rests on my
@@ -557,6 +556,118 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
       (gold + Elementary, refreshed nightly by the cron). Three free-tier services, two connection-string
       changes, zero model changes.
 
+**M10 — Durability & clean data updates (the reliability layer) — LOCKED**
+> Three additions that serve **one principle: the gold the dashboard reads is durable, honest, and
+> updated only when fully valid.** Data reliability is this case's core (DECISIONS.md intro), so these
+> are one milestone, not scattered polish. Two are built; the third (atomic publish) closes the last
+> gap — the one that would otherwise let the freshness timestamp lie.
+
+- [x] **"Last refreshed" freshness column.** `mart_data_coverage.last_refreshed_at` = `max(loaded_at)`
+      from `stg_breeds`, shown as an always-visible footer caption. Computed in dbt (app stays thin),
+      contract updated.
+      → **DONE.** Build green (`39 models, 39 data tests`, `PASS=82`); app renders
+      "Last refreshed YYYY-MM-DD HH:MM UTC" (live-verified); docs synced (SPEC, DASHBOARD,
+      `docs/dashboard_data_lineage.md`, `dbt_course/lesson8.tex`).
+      **Caveat that motivates the next item:** the timestamp is only *trustworthy* once publish is
+      atomic — a torn build could show a fresh time over stale marts. The freshness column and atomic
+      publish are two halves of the same honesty.
+
+- [x] **Alert channel — dead man's switch (Healthchecks.io heartbeat).** The cron pings `/start`,
+      success (last step, success-gated), and `/fail`; the monitor alarms if the daily **success** ping
+      doesn't arrive — catching a **missed/dropped** run and GitHub's 60-day auto-disable, which the
+      Actions page structurally cannot show (it only lists runs that *started*). Success-gated on
+      purpose (an unconditional ping is a switch that lies); ping URL is a secret (`HEALTHCHECKS_URL`);
+      grace tuned **wide** (a few hours) so normal cron lag doesn't cry wolf.
+      → **BUILT** in `scheduled.yml` + DECISIONS §6; **inert until** I create the Healthchecks check and
+      add the secret. **Not "verified"** until a real run pings — same honesty bar as M5's triggers.
+
+- [ ] **Atomic gold publish — Write-Audit-Publish, in-cloud (the last gap).**
+      **Problem (verified):** dbt materializes a model *then* tests it, so a failed test leaves the bad
+      table **live** and only skips *downstream*; building straight into `md:dogs` also leaves it
+      **torn** on a mid-build crash. Either way the dashboard — and `last_refreshed_at` — can show a mix
+      of fresh + stale gold. **Goal:** the gold marts update **only on full test success**, atomically,
+      **without dropping** the raw history or the Elementary trends (those are load-bearing for
+      observability — never regress them).
+  - **Design — separate the two write patterns, only one needs atomicity:**
+    - **Append-only, already safe → keep landing in `md:dogs` every run:** `raw.breeds` (idempotent
+      partition DELETE+INSERT) and `main_elementary` (the on-run-end hook appends this run's results).
+      They accumulate history + trends and have no torn problem. **A failed run still records itself**
+      here (raw partition + the Elementary failure), which is observability *working*.
+    - **Full-replace, torn-prone → the gold marts get a shadow-schema swap.**
+      - **Phase A (the gate):** the cron builds against `md:dogs` with the marts materialized into a
+        **shadow schema `main_marts_next`** (dbt var `marts_schema`, default `marts` locally), and runs
+        all **39 tests** against it. Any failure fails the job → Phase B is skipped, **live `main_marts`
+        untouched**.
+      - **Phase B (publish, only if A passed):** `scripts/publish_motherduck.py` runs, inside one
+        transaction, `CREATE OR REPLACE TABLE main_marts.<t> AS SELECT * FROM main_marts_next.<t>` for
+        every gold table (`dim_breeds`, `breed_temperaments`, the 5 marts) then `COMMIT` — a
+        **single-database, all-or-nothing** swap.
+      - **Heartbeat success ping is the LAST step**, so it only fires if the swap committed.
+  - **Failure semantics (what's in `md:dogs` after a run):** full success → raw+partition,
+    Elementary+results, `main_marts` swapped, timestamp advances. Any failure → raw+partition,
+    Elementary logs the **failure** (trend + heartbeat fire), `main_marts` and its "Last refreshed"
+    stay at **yesterday's consistent values**. Nothing dropped; the marts advance only when fully valid.
+  - **Load-bearing unknown — settle FIRST, before wiring the cron:** transactional multi-table
+    `CREATE OR REPLACE` is **verified atomic on local DuckDB** (mid-swap failure → full rollback;
+    `ALTER SCHEMA RENAME` is *unimplemented* in DuckDB, so it stays out). **MotherDuck's cloud
+    transaction semantics may differ** → prototype the script and run a **throwaway `md:` test** (force
+    a mid-swap failure, assert the live schema is untouched). If MotherDuck honors it, wire the cron;
+    if not, **fallback:** publish newest-consumer-last (the coverage/freshness table **last**, so the
+    timestamp can't advance over a torn set) — a weaker guarantee, documented as such.
+  - **Build sequence — checkbox gates (locked order; Step 0 is the gate, do it FIRST):**
+    - [x] **Step 0 (GATE) — prove the swap on MotherDuck.** On a throwaway `md:wap_test` database, seed
+          old gold + a "next" set, force a failure mid-swap, assert live `main_marts` is byte-identical.
+          → **PASSED, atomic on MotherDuck.** Success swap → all tables new; forced mid-swap failure
+          (`SELECT * FROM main_marts_next.NOPE`) → **full rollback, live untouched** (`{m1:1,m2:1,m3:1}`
+          before and after). `ALTER SCHEMA RENAME` confirmed unimplemented, stays out. `dogs` untouched,
+          `wap_test` dropped. **Decision gate cleared → proceed to Steps 1-5** (no fallback needed).
+    - [x] **Step 1 — dbt shadow schema.** `marts +schema → "{{ var('marts_schema', 'marts') }}"`.
+          → **DONE.** `--vars '{marts_schema: marts_next}'` builds all 7 gold tables into
+          `main_marts_next`; a bare build still lands `main_marts` (default unchanged, verified).
+    - [x] **Step 2 — `scripts/publish_motherduck.py`** — transactional `CREATE OR REPLACE` over the gold
+          tables (discovered from the shadow schema, not hard-coded); any exception → ROLLBACK →
+          non-zero exit → cron step fails → no success ping → dead-man email.
+          → **DONE + verified** on a throwaway `md:wap_test`: OLD live + NEW shadow → publish → live is
+          NEW, shadow dropped, exit 0, `dogs` untouched.
+    - [x] **Step 3 — wire `scheduled.yml`.** `DBT_MARTS_SCHEMA=marts_next` (job env) + `run_pipeline.sh`
+          passes `--vars '{marts_schema: ...}'` when set; steps: Phase A → warns → **Phase B publish
+          (default `if: success()`)** → heartbeat success (last) → `if: failure()` fail ping.
+          → **DONE.** YAML valid, gate order verified (Phase B only runs on green; success ping only
+          after Phase B). CI/local unchanged (they don't set `DBT_MARTS_SCHEMA` → build `main_marts`).
+    - [x] **Step 4 — verify end-to-end on a throwaway `md:wap_e2e`.**
+          → **DONE, both paths proven.** **Success:** Phase A `PASS=82` → Phase B swapped 7 tables into
+          live `main_marts` (627 breeds, 585 plotted, shadow dropped); raw + Elementary landed.
+          **Injected failure:** a temp always-failing test → Phase A `ERROR=1`, exit 1 (Phase B skipped);
+          live "Last refreshed" **unchanged** while raw's `loaded_at` **advanced** — gold reflects the
+          last *successful* publish, never a failed run. `dogs` untouched throughout.
+    - [ ] **Step 5 — docs:** reconcile every `.md` except `DECISIONS.md` (yours) — the full list is the
+          M10 docs-sync close-out item below.
+  - **Files:** `scripts/publish_motherduck.py` (new), `dbt/dbt_project.yml` (`marts_schema` var on the
+    marts `+schema`), `.github/workflows/scheduled.yml` (Phase A build+test into the shadow schema →
+    Phase B publish → heartbeat order), DECISIONS §2/§5/§6, SPEC (the shadow schema + swap), DAY_REPORT.
+  - **Supersedes** the M9 "cron sets `DBT_DUCKDB_PATH=md:dogs` → build straight to cloud" step — that
+    direct-to-cloud build is exactly what leaves `md:dogs` torn on a mid-build failure.
+
+- [x] **Docs sync — every `.md` except `DECISIONS.md` (that one is yours).** M10's close-out: reconcile
+      the docs that describe the cron / gold-write path.
+      → **DONE** (DECISIONS deliberately untouched, yours): README (diagram + WAP note), SPEC (shadow
+      schema + swap in the targets section), CLAUDE (the "gold publishes atomically" rule), DASHBOARD
+      (`last_refreshed_at` trustworthy-by-construction), DAY_REPORT (the M10 narrative). `docs/dashboard_data_lineage.md`
+      unchanged, as planned (the dashboard still reads `main_marts`; the shadow is a build-time detail).
+  - **README.md** — the Architecture diagram + cron flow show the **shadow-schema swap** (gold →
+    `main_marts_next` → atomic swap into `main_marts` on green), not a direct build into `md:dogs`; the
+    write-path invariant gains "gold updates atomically, only on full success."
+  - **SPEC.md** — the dbt-targets / schema section gains `main_marts_next` (transient shadow) + the swap;
+    the cron's "prod → cloud" row becomes build-shadow-then-publish.
+  - **CLAUDE.md** — one distilled rule: gold publishes via an atomic shadow-swap, and `raw` +
+    `main_elementary` **append** to `md:dogs` (never dropped) — so a future session doesn't "simplify"
+    the shadow schema away.
+  - **DASHBOARD.md** — one line: `last_refreshed_at` is trustworthy **by construction** now (advances
+    only when the whole gold set swaps in).
+  - **DAY_REPORT.md** — the M10 narrative (the atomicity gap, WAP-in-cloud, the `md:` verification).
+  - **No change:** `docs/dashboard_data_lineage.md` (the dashboard still reads `main_marts`; the shadow
+    schema is a build-time detail invisible to the read path). **`DECISIONS.md` §2/§5/§6 — yours.**
+
 ---
 
 ## M0.5 prompt — throwaway interactive explorer (paste now, reads saved raw_breeds.json)
@@ -596,7 +707,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
 >
 > Stack (decided — don't change without flagging a tradeoff): ingestion = [dlt / Python+requests+
 > tenacity — my choice]; warehouse = DuckDB; transform/test/docs = dbt Core with dbt-duckdb; CI/CD
-> + daily ~02:00 UTC = GitHub Actions; dashboard = Streamlit; git with incremental commits per milestone.
+> + daily 02:00 UTC = GitHub Actions; dashboard = Streamlit; git with incremental commits per milestone.
 >
 > Source: https://api.thedogapi.com/v1/breeds — **an API key IS required**. Unauthenticated calls
 > return **403 Forbidden**; the 628 breeds only came back once the key was sent as an `x-api-key`

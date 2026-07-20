@@ -25,6 +25,20 @@ with tagged_breeds as (
     select count(distinct breed_id) as n
     from {{ ref('breed_temperaments') }}
 
+),
+
+freshness as (
+
+    -- "Last refreshed" for the dashboard footer. loaded_at is the wall-clock of the ingestion
+    -- that produced the current partition (stg_breeds already filters to the latest run_date),
+    -- so max() collapses the one partition to a single timestamp. Read from silver, not raw,
+    -- to stay one layer down; it's pipeline metadata, computed in dbt so the app stays thin.
+    -- Chose loaded_at (wall-clock) over run_date (the logical partition date) deliberately: on a
+    -- nightly-refreshed hosted store it shows real recency and goes visibly stale if the cron
+    -- stops -- a viewer-facing freshness signal, complementing the heartbeat that alerts me.
+    select max(loaded_at) as last_refreshed_at
+    from {{ ref('stg_breeds') }}
+
 )
 
 select
@@ -37,6 +51,8 @@ select
     count(*) filter (where d.weight_mid_kg is not null
                        and d.life_span_mid_years is not null)            as breeds_plotted_scatter,
     count(*) filter (where d.weight_mid_kg is null
-                        or d.life_span_mid_years is null)                as breeds_excluded_scatter
+                        or d.life_span_mid_years is null)                as breeds_excluded_scatter,
+    max(f.last_refreshed_at)                                            as last_refreshed_at
 from {{ ref('dim_breeds') }} d
 cross join tagged_breeds t
+cross join freshness f

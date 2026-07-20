@@ -3,7 +3,12 @@
 The Dog API is a small, static, deliberately messy reference dataset, so the engineering challenge is
 **craft, not volume**: clean parsing, a legible model, and a reliable idempotent pipeline. My guiding
 principle throughout is **right-sizing** — the smallest stack that does the job well and that I can
-fully explain, rather than the heaviest set of managed services. 
+fully explain, rather than the heaviest set of managed services. Since this is a data engineering study case, I've deliberately put most attention towards data reliability: clean and reliable data is the key to make all downstream tasks work. Therefore, I insisted on: 
+- **the data pipeline**: the bronze to gold tables splitting.
+- **observability**: for me observability is crucial for data reliability. Without it there is no way to track failures over days.
+- **alert channel**: it was presented in the brief as an additional bonus feature, but for me it is essential because it catches failures upstream dbt - at ingest, a failed or not running scheduled cron...
+- **storage durability**: without over-engineering it, I wanted the scheduled cron to persist data because this is the first step for observability and durability.
+- **atomicity**: A dbt test that fails leaves a bad table in place and only skips downstream. We end up with an intermediate state that must not be promoted to prod data. That's why I decided *for the scheduled cron* to run dbt tests on a shadow schema and then swap it to prod data on **full** success. This ensures that all gold data shown in the live dashboard pass **all tests**.
 I designed the architecture first organized in milestones and used Claude Code as the implementer 
 against it, so every choice below is mine to defend. One paragraph per layer: what I chose, why over 
 the alternative, what I traded off. 
@@ -13,14 +18,12 @@ the alternative, what I traded off.
 **Chose** `ingestion/ingest.py` — `requests` for one GET, `tenacity` for retry/backoff, DuckDB's
 Python API for the write — **over `dlt`**. This is one endpoint returning one JSON array; dlt's
 schema-evolution and incremental-state machinery would add a dependency and its own abstractions
-between me and the only two properties that matter here — idempotency and partial-failure safety —
-and I'd be explaining dlt's semantics at the debrief instead of my own. ~90 lines of explicit Python
-is right-sized; dlt wins the moment a second and third source appear. Raw lands **verbatim** (JSON +
+between me and the only two properties that matter here — idempotency and partial-failure safety; dlt wins the moment a second and third source appear. Raw lands **verbatim** (JSON +
 `run_date` + `loaded_at`) so a bad parse never means a re-fetch; the `id`-string → INTEGER cast is
 deferred to staging. Raw is **partitioned by `run_date`** (the brief's ask), and that partition is
 the mechanism of idempotency: each run **DELETE+INSERTs the day's partition in one transaction**, so
 a re-run replaces rather than appends and a crash rolls back to last-good — and `stg_breeds` filters
-to `max(run_date)`, so a local file that accumulates partitions still behaves exactly like CI.
+to `max(run_date)`.
 Retries hit only transient errors (timeouts / 429 / 5xx); a **403 fails fast** (retrying a bad key
 just delays the real message), and every fetch is validated for structure, PK-uniqueness and
 completeness (**≥90% of a reference count**, not equality — 629 breeds would be *real data*, not an
@@ -29,11 +32,8 @@ error) before it touches the warehouse. The pipeline is stateless in its
 depending on a prior run — which is what makes CI's empty warehouse a supported start. What *output*
 persists is a separate choice: CI discards it, and the cron now persists to hosted DuckDB, so
 `raw.breeds` accumulates one durable partition a night — full-refresh processing, durable output, and
-`stg_breeds` filtering to `max(run_date)` keeps every run behaving identically regardless. **Still
-deferred:** dbt **SCD-2** snapshots that version a breed's row only when it actually changes — *data*
-change-history, distinct from *incremental* rebuilds (a scale lever, not history). Their prerequisite,
-durable storage, now exists; the run/test audit trail is already durable through the observability
-layer (§5). See the last section, "What I'd build next given another week".
+`stg_breeds` filtering to `max(run_date)` keeps every run behaving identically regardless. **With more time:** dbt **SCD-2** snapshots that version a breed's row only when it actually changes — *data*
+change-history, distinct from *incremental* rebuilds (a scale lever, not history).
 
 ## 2. Database & warehouse — DuckDB (local) + MotherDuck (the same engine, hosted)
 
@@ -64,14 +64,13 @@ parser re-executed on read — free at 627 rows and *never stale* by constructio
 read repeatedly by the dashboard, so they pay the parse once and are scanned many times. The rule
 and its crossover are explicit (flip to a table at scale when `reads × parse_cost > storage +
 rebuild_cost` - I tested it with x1000 rows and this is where going from view to table pays off),
-and the flip is one line of config with no SQL touched. **Traded off:** no always-on/shared
-warehouse for the local demo — fine for a POC. **The hosted shared copy is now in place** — the cron
+and the flip is one line of config with no SQL touched. **The hosted shared copy is now in place** — the cron
 builds into **MotherDuck** (`md:dogs`, hosted DuckDB), the *same* dbt code with only the connection
 string changed: it is what makes Elementary's trends and
 the hosted dashboard possible, and it is the prerequisite for turning to **incremental** ("only
 reprocess what changed") at scale (see the last section). Local file and cloud now coexist:
-`dev`/local-`prod` write files, the cron writes `md:dogs`, one env var (`DBT_DUCKDB_PATH`) selects
-which — no SQL knows the difference.
+`dev`/local-`prod` write files, the cron writes `md:dogs` and ensure atomicity for gold tables, one env var (`DBT_DUCKDB_PATH`) selects
+which — no SQL knows the difference. Important point there worth stopping: atomicity. I realized after building the pipeline that a failed dbt test leaves the table in place. Therefore, some gold tables can reflect old data (those dependind on the *failed* table upstream), and other updated data. So I decided to update gold data (read by the dashboard from MotherDuck) ONLY IF all tests pass. The mechanism: a SHADOW schema (`main_marts_next`) instead of the live one, run all tests against it, and only then atomically swap it into `main_marts`.  
 
 ## 3. Transformation & modeling — dbt Core
 
@@ -84,7 +83,7 @@ question (over-modeling) or one fat table (under-modeling). All business logic l
 messy fields are parsed into typed min/max/**midpoint** columns (`life_span` "12-15", sex-specific
 weight/height ranges collapsed to a whole-breed envelope), `'unknown'` sentinels nulled *before*
 casting, `temperament` exploded into a lowercased+trimmed bridge (66→46 tags once case-folded), and
-the duplicate "Caucasian Shepherd Dog" deduped in staging (628 raw → **627** gold). **39 tests**
+the duplicate "Caucasian Shepherd Dog" deduped in staging (628 raw → **627** gold). This results from an exploratory phase (see exploration/ foler and the subsequent report PROFILE_REPORT.md). **39 tests**
 carry the contract, split by severity on purpose: hard invariants (min ≤ max, PK unique) are
 **error** (18), distributional/drift guards are **warn** (6) -- a null-rate or source-size change is
 a *human* judgment, not a build failure, so CI annotates them and stays green --, regression guards,
@@ -99,18 +98,7 @@ on the package for the boilerplate). **The one deliberate exception:** the Eleme
 package — the project's *first* external package, added for **observability infrastructure, not test
 logic**. It writes no assertion I couldn't defend; it *captures the results of the 39 I already
 wrote* (status, timing, the warn/error split) into `main_elementary` tables via an automatic
-on-run-end hook, and renders a health report. This keeps the "no dependencies" stance coherent rather
-than breaking it: observability is the deliberate exception to *no packages*, exactly as
-statelessness (§1) is the deliberate exception to *no reversals* — the rule holds, and the one place
-it doesn't is written down. (Honesty note: `dbt_utils` does now sit in `dbt_packages/`, but as
-Elementary's *transitive* dependency, used only by its internals — none of **our** models or tests
-reference it.) Verified the add-on didn't erode the suite: the registered **data-test count held at
-39** (a dropped test is the failure mode a package can silently introduce), build stayed
-`PASS WARN=0 ERROR=0`. **The honest cost:** on DuckDB, Elementary's on-run-end upload trips a known
-*upstream* transaction-handling bug (elementary#1712 / dbt-core#11966) that prints benign "commit … no
-transaction open" log lines — the write still lands, `run_results.json` is 0-error, the build is green,
-and I chose to document that rather than raise the adapter's log level (which would bury real errors
-too). **With more time:** the specified-but-unbuilt `mart_temperament_pair_lift`.
+on-run-end hook, and renders a health report. 
 
 ## 4. Version control — GitHub
 
@@ -134,7 +122,7 @@ up to date" (the first thing I'd switch on for a second contributor).
 
 **Chose** GitHub Actions: tests + `dbt build` on **every PR** (visible green/red badge), plus a step
 that surfaces dbt `warn`s as annotations without failing the build. The defining call is that **CI
-proves the pipeline; the laptop — and now the cron — serves it** — a PR build ingests, builds gold,
+proves the pipeline; the laptop and the cron serve it** — a PR build ingests, builds gold,
 tests, goes green and then *throws its warehouse away*, because serving was never a PR's job; the
 live Streamlit demo reads the local `dogs.duckdb`. This kept the cloud-handoff problem out of the
 *proving* path entirely, following directly from the statelessness of §1 (every run rebuilds from the
@@ -147,18 +135,15 @@ PR spends a real API call (no fixture) — the upside is that each check is a ge
 from an empty warehouse. **The serving half is built without abandoning that thesis:** rather than
 *convert* the prod target, I kept the split and pointed only the **cron** at hosted DuckDB
 (`DBT_DUCKDB_PATH=md:dogs`), so **PR builds still prove against a throwaway local warehouse while the
-nightly cron serves** — writing gold + the observability run-history to a durable store the hosted
+02:00 cron serves** — writing gold + the observability run-history to a durable store the hosted
 dashboard reads. Proving and serving stay different jobs on different triggers, so a PR can never
 overwrite last night's served data. It was a one-line change because the pipeline is stateless (§1) —
 only the output **path** moved (a file → an `md:` connection string), no model SQL touched.
 
 ## 6. Orchestration & scheduling — GitHub Actions cron (not Airflow)
 
-**Chose** the cron scheduler built into GitHub Actions, **daily around 02:00 UTC** (scheduled at
-`17 2 * * *`, deliberately **off the top of the hour**: Actions cron is best-effort and `:00` is the
-most congested minute, so `0 2` routinely lags by hours while `:17` pulls the typical delay down to
-minutes — still not an SLA, but a near-static source doesn't need one), over Airflow / Dagster /
-Prefect. This is **one daily job**: standing up a managed orchestrator for a single
+**Chose** the cron scheduler built into GitHub Actions, **daily at 02:00 UTC**, over Airflow /
+Dagster / Prefect. This is **one daily job**: standing up a managed orchestrator for a single
 scheduled task is operational overhead I can't justify. Actions cron runs it reliably and unattended.
 **Whether the last run passed or failed is answered at two levels.** At a glance: the run status
 (green/red + logs, and the README badge). Durably and with history: an **observability layer** built on
@@ -169,11 +154,19 @@ reads the **local** `dogs_dev.duckdb` (my own builds), while `./scripts/observab
 reads **MotherDuck** — the cron's cloud data — so I can check whether last night's scheduled pipeline
 went green and watch trends accumulate night over night (`raw.breeds` and the Elementary tables both
 persist there, §1/§2). It shows *which* test failed and *for how long*, not just that something did
-(`loaded_at` shows data freshness alongside). The one gap: nothing yet *pushes* a failure, you have to
-look. **With more time:** an **alert channel** (Elementary's `edr monitor` posts a failing test to
-Slack; an `if: failure()` step catches a run that crashes outright — the brief's "tests wired to an
-alert channel"), and Dagster only if the DAG outgrew a handful of steps or needed richer backfills —
-not before, and the difference is the whole point.
+(`loaded_at` shows data freshness alongside). But looking is a pull, and the hardest failure to catch
+is a run that **never happened** — GitHub cron is best-effort and silently *drops* runs (and
+auto-disables a scheduled workflow after 60 days of repo inactivity), which the Actions page
+structurally cannot show, since it only lists runs that *started*. So the cron carries a **dead man's
+switch**: it pings Healthchecks.io on **start / success / fail**, and the monitor alarms if the daily
+**success** ping doesn't arrive. The success ping is **success-gated** on purpose — pinging
+unconditionally would let a failed run report "alive" and keep the monitor green while broken, a switch
+that lies. Grace is **wide** (a few hours), because GitHub cron is routinely 15-30 min late and a tight
+window would cry wolf — a flaky page gets muted, which is the "wallpaper" rule (§3) applied to alerting.
+The ping URL is a secret (`HEALTHCHECKS_URL`), same discipline as `DOG_API_KEY` / `MOTHERDUCK_TOKEN`.
+**With more time:** Elementary's `edr monitor` to push a *specific failing test* (not just a failed run)
+to Slack, and Dagster only if the DAG outgrew a handful of steps or needed richer backfills — not
+before, and the difference is the whole point.
 
 ## 7. Dashboard & visualization — Streamlit, thin, spec-first
 

@@ -61,7 +61,12 @@ models:
       +schema: staging
     marts:
       +materialized: table
-      +schema: marts
+      # M10 (Write-Audit-Publish): the marts' schema is a var so the cron can build gold into a
+      # SHADOW schema (`main_marts_next`) instead of the live one, run all tests against it, and only
+      # then atomically swap it into `main_marts`. Default is `marts` (→ main_marts), so a bare/local
+      # build is unchanged; the cron passes `--vars '{marts_schema: marts_next}'`. dbt concatenates
+      # onto `main`, so the value is `marts` / `marts_next`, never `main_marts`.
+      +schema: "{{ var('marts_schema', 'marts') }}"
 
   # M9 — Elementary observability (see packages.yml for why this one package is allowed).
   # Its models land in their OWN schema (main_elementary) and manage their OWN

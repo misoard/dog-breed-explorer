@@ -34,7 +34,7 @@ Persistent context for Claude Code. Read this every session. The detailed schema
 - Warehouse: **DuckDB** (single file, e.g. `dogs.duckdb`). Analytical/OLAP, zero-ops, native JSON.
 - Transform / test / docs: **dbt Core** with the `dbt-duckdb` adapter.
 - Version control: **git / GitHub**, incremental commits.
-- CI/CD + scheduling: **GitHub Actions** (test on PR; cron daily @ ~02:00 UTC on main).
+- CI/CD + scheduling: **GitHub Actions** (test on PR; cron daily @ 02:00 UTC on main).
 - Dashboard: **Streamlit**, thin — reads gold marts only.
 - Right-sizing is deliberate: NO Airflow/Kubernetes/managed warehouse for one daily job. If you
   think we need a heavier tool, flag it as a tradeoff and let me decide.
@@ -142,6 +142,13 @@ range".
 - **staging = view in `main_staging`; marts = table in `main_marts`**; set in `dbt_project.yml`
   (`+schema: staging` concatenates onto `main`), never per model. Views for a parse pass with one
   consumer; tables for what a dashboard reads repeatedly.
+- **M10 — the cron publishes gold ATOMICALLY (Write-Audit-Publish); don't "simplify" it away.** The
+  marts `+schema` is `{{ var('marts_schema', 'marts') }}`; the cron sets `DBT_MARTS_SCHEMA=marts_next`
+  so gold builds into a **shadow schema**, is tested there, and `scripts/publish_motherduck.py` swaps
+  `main_marts_next → main_marts` in **one transaction** (only on full-green). `raw` + `main_elementary`
+  **append** to `md:dogs` every run and are never dropped (history/trends). CI/local leave the var
+  unset → build straight into `main_marts`. Why: dbt materializes then tests, so building direct to
+  cloud would leave torn/stale gold live and make "Last refreshed" lie. See ARCHITECTURE_PLAN.md M10.
 - **LLM bonus = Pattern A:** `enrich.py` reads `stg_breeds` → LLM → writes `raw.breed_enrichment`;
   `dim_breeds` **LEFT JOIN**s it via `source()`. Order: ingest → dbt staging → enrich → dbt marts.
   dbt never makes a network call.

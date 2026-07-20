@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/misoard/dog-breed-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/misoard/dog-breed-explorer/actions/workflows/ci.yml)
 
-**🔗 Live dashboard:** **https://dog-breed-explorer-case-study.streamlit.app/** — served from MotherDuck (hosted DuckDB), refreshed nightly by the cron. No laptop involved.
+**🔗 Live dashboard:** **https://dog-breed-explorer-case-study.streamlit.app/** — served from MotherDuck (hosted DuckDB), refreshed nightly by the 02:00 cron. No laptop involved.
 
 A right-sized daily data pipeline and a thin analytics dashboard over [TheDogAPI](https://thedogapi.com)'s
 **627 dog breeds**. Bronze → silver → gold in **DuckDB + dbt**, scheduled by **GitHub Actions**, read
@@ -70,12 +70,18 @@ local file, or MotherDuck — with no change to a line of model SQL.
                                      │
         one env var (DBT_DUCKDB_PATH) selects where GOLD + observability are written:
           • local  ./dogs.duckdb        ← laptop demo build, and CI PR builds (ephemeral)
-          • cloud  md:dogs  (MotherDuck) ← the nightly cron; DURABLE, accumulates night over night
+          • cloud  md:dogs  (MotherDuck) ← the 02:00 cron; DURABLE, accumulates night over night
                                      │                     the Streamlit APP reads gold:
                                      ▼                            • locally → ./dogs.duckdb
                           gold + observability                    • hosted  → md:dogs  (LIVE)
   The cron writes MotherDuck; CI PR builds stay local, so a PR never clobbers served data.
   (The observability REPORT reads the separate main_elementary tables, not gold. See below.)
+
+  Atomic gold updates (Write-Audit-Publish): the cron builds gold into a SHADOW schema
+  (main_marts_next), runs all 39 tests there, and only on FULL success swaps it into live
+  main_marts in one transaction. A failed test never leaves torn/stale gold live, so the
+  dashboard's "Last refreshed" can't lie. raw + Elementary append every run (history/trends,
+  even on failure); only the gold marts get the atomic swap.
 ```
 
 | Layer | Choice | Why (one line) |
@@ -84,7 +90,7 @@ local file, or MotherDuck — with no change to a line of model SQL.
 | Warehouse | **DuckDB** (local file) → **MotherDuck** (hosted, same engine) | analytical/OLAP, zero-ops, native JSON; the cron persists to MotherDuck so gold survives the VM |
 | Transform / test | **dbt Core** + `dbt-duckdb` | SELECT models, `ref()` DAG, 39 tests, contracts, dev/prod targets |
 | Observability | **Elementary** (dbt package) | captures every test/run result durably; day-over-day health once in MotherDuck |
-| CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ ~02:00 UTC |
+| CI/CD + schedule | **GitHub Actions** | tests + build on every PR; daily cron @ 02:00 UTC |
 | Dashboard | **Streamlit** + Altair | thin reader of gold marts (local file, or MotherDuck when hosted) |
 
 **Right-sized on purpose:** no Airflow for one daily job, and DuckDB — local, or the same engine
@@ -97,7 +103,7 @@ reasoning for every choice, and where it was traded off, is in [`DECISIONS.md`](
 |---|---|---|---|
 | `dev` (default) | `dbt build` | `dogs_dev.duckdb` | me, iterating on models — a bare build can't touch the serving copy |
 | `prod` | `./scripts/run_pipeline.sh` | `dogs.duckdb` (local file) | the local demo the dashboard reads, and CI PR builds (ephemeral) |
-| `prod` → cloud | `DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh` | `md:dogs` (MotherDuck) | the nightly cron — durable, what the hosted dashboard reads |
+| `prod` → cloud | `DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh` | `md:dogs` (MotherDuck) | the 02:00 cron — durable, what the hosted dashboard reads |
 
 `dev` is the default precisely so reaching the serving copy (`--target prod`, or the script) is a
 deliberate act. The `md:` path just swaps the connection string — same SQL, same targets.
@@ -196,7 +202,7 @@ dog-breed-explorer/
   **contracts** on the 6 marts the dashboard reads. Full breakdown in [`SPEC.md`](SPEC.md).
 - **On every pull request**, GitHub Actions runs the whole pipeline **from an empty warehouse**
   (ingest → `dbt build` → tests) and reports green/red — the badge at the top.
-- **A daily cron @ ~02:00 UTC** re-runs it against the live API as a health check. By default it
+- **A daily cron @ 02:00 UTC** re-runs it against the live API as a health check. By default it
   discards its warehouse — CI *proves* the pipeline, the laptop *serves* the demo; with the optional cloud
   path the cron *also* serves, building into MotherDuck while PR builds stay local (so a PR can't
   clobber served data). A deliberate scope call, [`DECISIONS.md` §5](DECISIONS.md).
@@ -239,7 +245,9 @@ the token is a Streamlit platform secret, never in the repo or the page).
 
 `DOG_API_KEY` is the primary secret — locally in a gitignored `.env` (template: `.env.example`), in CI
 a GitHub Actions secret. **`MOTHERDUCK_TOKEN`** is a second, **optional** secret, needed only for the
-cloud path (same handling: `.env` locally, an Actions secret for the cron). Both are read from the
+cloud path (same handling: `.env` locally, an Actions secret for the cron). **`HEALTHCHECKS_URL`** is a
+third, **optional** Actions-only secret — the dead man's switch ping URL for the cron; anyone with it
+can forge a healthy ping, so it's a secret too, not hardcoded in the workflow. All are read from the
 environment, never committed, never logged.
 
 ---
@@ -247,7 +255,8 @@ environment, never committed, never logged.
 ## Next, given more time
 
 Recorded in [`DECISIONS.md` → "What I'd build next"](DECISIONS.md). The keystone — durable storage —
-is **now built**, which delivered the observability trend view and hosted serving above.
-Still future: **SCD-2 snapshots** for full change history, **incremental** models at scale, **IaC**
-(Terraform the ruleset + secrets), an **alert** on a failed cron, and the **LLM enrichment** bonus
-(specified, not built).
+is **now built**, which delivered the observability trend view and hosted serving above; the cron also
+carries a **dead man's switch** (Healthchecks.io heartbeat, start/success/fail) so a *missed* or failed
+run pushes an alert, which the Actions page alone can't show. Still future: **SCD-2 snapshots** for full
+change history, **incremental** models at scale, **IaC** (Terraform the ruleset + secrets), Elementary's
+`edr monitor` to page on a *specific failing test*, and the **LLM enrichment** bonus (specified, not built).

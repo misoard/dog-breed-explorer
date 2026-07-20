@@ -24,13 +24,10 @@ name: Scheduled pipeline
 
 on:
   schedule:
-    # ~02:17 UTC daily. Deliberately :17, NOT :00 — Actions cron is best-effort and
-    # the top of the hour is the most congested slot, so `0 2` routinely lags by
-    # hours; scheduling off the hour pulls the delay down to minutes. It's still
-    # best-effort (not an SLA), which is fine for a health check on a source that
-    # changes ~never — a few hours' lag is immaterial (DECISIONS.md §6). One daily
-    # job is also the entire reason there's no Airflow here.
-    - cron: '17 2 * * *'
+    # 02:00 UTC daily. Actions cron is best-effort and can lag under load — fine
+    # for a health check on a source that changes ~never. One daily job is also
+    # the entire reason there's no Airflow here (DECISIONS.md §6).
+    - cron: '0 2 * * *'
   # So the cron can be exercised on demand instead of waiting until 02:00 —
   # otherwise the only way to test a change to it is to wait a day.
   workflow_dispatch:
@@ -52,8 +49,29 @@ jobs:
       # store the hosted dashboard reads.
       DBT_DUCKDB_PATH: md:dogs
       DBT_TARGET: prod
+      # M10 (Write-Audit-Publish): the cron builds the gold marts into a SHADOW schema
+      # (main_marts_next), runs all 39 tests against it, and only then atomically swaps it into
+      # live main_marts (Phase B). So a failed test never leaves torn/stale gold live, and the
+      # dashboard's "Last refreshed" can't lie. Only the CRON sets this — ci.yml and local builds
+      # leave it unset and build straight into main_marts, unchanged.
+      DBT_MARTS_SCHEMA: marts_next
+      # Dead-man's-switch ping URL (Healthchecks.io). A SECRET like the others — anyone
+      # holding the URL can forge a "healthy" ping and keep the monitor falsely green, so
+      # it never appears literally in this file (same discipline as DOG_API_KEY /
+      # MOTHERDUCK_TOKEN). At the JOB level so the `if:` gates below can read it; empty
+      # when the secret is unset, and every ping step no-ops on that check, so the whole
+      # heartbeat is inert until the secret exists.
+      HEALTHCHECKS_URL: ${{ secrets.HEALTHCHECKS_URL }}
 
     steps:
+      # Dead-man's-switch, signal 1/3 — START. Fires before anything runs, so Healthchecks
+      # can also MEASURE run duration (start -> success). `|| true`: a monitoring ping must
+      # never turn a healthy run red. `if:` overrides the default success() so it runs
+      # first regardless; the env check makes it a no-op until the secret is set.
+      - name: Heartbeat (start)
+        if: env.HEALTHCHECKS_URL != ''
+        run: curl -fsS -m 10 --retry 5 "$HEALTHCHECKS_URL/start" || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -64,15 +82,18 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt
 
-      - name: Run the pipeline
+      # PHASE A — the gate. Ingest raw into md:dogs, build the gold into the SHADOW schema
+      # (DBT_MARTS_SCHEMA=marts_next, job env), and run all 39 tests there. raw + Elementary land
+      # in md:dogs directly (they append — history/trends, even a failed run records itself). If any
+      # test fails, this step fails and Phase B is skipped → live main_marts stays yesterday's.
+      - name: Phase A — ingest + build gold into shadow + test
         env:
           # Without this the cron 403s every night. Repo Settings > Secrets and
           # variables > Actions > New repository secret.
           DOG_API_KEY: ${{ secrets.DOG_API_KEY }}
-          # M9 Part B: the cron writes to md:dogs, so it needs the MotherDuck token
-          # (same secrets mechanism as DOG_API_KEY). ci.yml does NOT set this — its
-          # local build never touches the cloud. DuckDB reads MOTHERDUCK_TOKEN from
-          # the environment automatically when it opens an md: connection.
+          # The cron writes to md:dogs, so it needs the MotherDuck token (same secrets mechanism as
+          # DOG_API_KEY). ci.yml does NOT set this — its local build never touches the cloud. DuckDB
+          # reads MOTHERDUCK_TOKEN from the environment automatically when it opens an md: connection.
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: ./scripts/run_pipeline.sh
 
@@ -83,11 +104,42 @@ jobs:
         if: always()
         run: python scripts/annotate_warns.py
 
+      # PHASE B — publish. Runs ONLY if Phase A passed (default if: success()). Atomically swaps the
+      # validated shadow gold (main_marts_next) into live main_marts inside one transaction, then
+      # drops the shadow. On any failure the swap rolls back (verified atomic on MotherDuck), live is
+      # untouched, and — because this step failed — no success heartbeat pings → the dead man fires.
+      - name: Phase B — publish (atomic swap into live gold)
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: python scripts/publish_motherduck.py --drop-shadow
+
+      # Dead-man's-switch, signal 2/3 — SUCCESS. ONLY on a fully-green run (if: success()).
+      # This gate is load-bearing: pinging unconditionally (if: always()) would let a
+      # FAILED run report "alive" and keep the monitor green while the pipeline is broken —
+      # a switch that lies. On failure this step is SKIPPED, so no success ping arrives and
+      # the monitor eventually alarms; the fail ping below makes that immediate.
+      - name: Heartbeat (success)
+        if: success() && env.HEALTHCHECKS_URL != ''
+        run: curl -fsS -m 10 --retry 5 "$HEALTHCHECKS_URL" || true
+
+      # Dead-man's-switch, signal 3/3 — FAIL. Explicit failure signal on any failed step,
+      # so the monitor alarms at once instead of waiting for the missing success ping to
+      # time out. Three signals, same effort as one: missing-run detection + measured
+      # duration + an explicit fail.
+      - name: Heartbeat (fail)
+        if: failure() && env.HEALTHCHECKS_URL != ''
+        run: curl -fsS -m 10 --retry 5 "$HEALTHCHECKS_URL/fail" || true
+
       # No artifact upload needed: persistence is the POINT now, but it lives in
       # MotherDuck (written during the build), not in a GitHub artifact. The VM is
       # still discarded — it was only ever the compute; the store is remote. See the
       # header, and DECISIONS.md §5 (Part B updated the serving half).
       #
-      # KNOWN GAP (stated, not hidden): a failed scheduled run is only visible on
-      # the Actions page — nothing pushes it to me. A red cron nobody sees is a
-      # cron that isn't running. Alerting is the "with more time" item in §5.
+      # ADDRESSED (was a known gap): a failed OR MISSED scheduled run used to be visible
+      # only on the Actions page — and a run GitHub silently DROPS (or auto-disables after
+      # 60 days of repo inactivity) left no trace at all. The heartbeat above closes both:
+      # Healthchecks expects a daily success ping and alarms if none arrives, so a missed
+      # run is now detectable, which the Actions page structurally cannot show. Grace is
+      # tuned WIDE (a few hours) on purpose: GitHub cron is routinely 15-30 min late and
+      # that is normal, not a miss — a tight window would cry wolf, and a flaky alert gets
+      # muted (the DECISIONS "wallpaper" rule applied to paging). See DECISIONS.md §6.
