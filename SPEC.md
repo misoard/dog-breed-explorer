@@ -138,16 +138,18 @@ dbt-duckdb routes to MotherDuck). The `prod` target isn't three targets; it's on
 since MotherDuck doesn't auto-create on attach).
 
 **M10 — atomic gold updates (Write-Audit-Publish).** dbt materializes a model *then* tests it, so a
-failed test leaves the bad table live (only downstream skips); a mid-build crash into `md:dogs` also
-leaves it torn. So atomicity follows the **destination**: when `DBT_DUCKDB_PATH` is an `md:` path,
+failed test leaves the bad table live (only downstream skips); a mid-build crash into the live schema
+also leaves it torn. So atomicity follows the **prod target**: when `DBT_TARGET=prod`,
 `run_pipeline.sh` builds gold into a **shadow schema** (the `marts` `+schema` is
 `{{ var('marts_schema', 'marts') }}`, passed `marts_next`), runs all 39 tests there, and then
-**`scripts/publish_motherduck.py`** swaps `main_marts_next → main_marts` inside **one transaction**
-(`CREATE OR REPLACE TABLE … AS SELECT *` per gold table; verified atomic on MotherDuck — `ALTER SCHEMA
-RENAME` is unimplemented). So the cron *and* a hand-run `DBT_DUCKDB_PATH=md:dogs ./run_pipeline.sh` are
-both atomic. Only on full-green does live gold advance; `raw` + Elementary append every run regardless
-(history/trends, even a failed run records itself). A **local file** path builds straight into
-`main_marts` (single writer, no swap), so CI/local are unchanged.
+**`scripts/publish_gold.py`** swaps `main_marts_next → main_marts` inside **one transaction**
+(`CREATE OR REPLACE TABLE … AS SELECT *` per gold table; verified atomic on both local DuckDB and
+MotherDuck — `ALTER SCHEMA RENAME` is unimplemented). The **same guard covers every prod destination**:
+the cron's `md:dogs`, the local `dogs.duckdb` demo (read live by Streamlit), and CI — which now
+**exercises the swap on every PR** instead of only in the nightly cron. Only on full-green does live
+gold advance; `raw` + Elementary append every run regardless (history/trends, even a failed run records
+itself). **`--target dev` stays DIRECT** into `main_marts` (no shadow, no swap): the iteration loop
+wants speed, and nothing serves `dogs_dev.duckdb`.
 
 ```bash
 # dev — iterate without touching the serving copy
@@ -323,6 +325,14 @@ explorer should not see the same breed twice; `id` stays the PK but the duplicat
 artifact, not two breeds.
 
 ## Tests (declare BEFORE finalising models = the TDD contract)
+
+*(**TEST-ONLY chaos hooks**, not part of the 39: `tests/debug_force_failure.sql` and
+`tests/debug_force_warn.sql` are `{{ config(enabled=var('force_test_*', false)) }}`, so they are
+disabled and unregistered on a normal build. The cron's `workflow_dispatch` inputs
+`force_test_failure` / `force_test_warn` enable them on demand to exercise the failure / warn paths on
+a real cron run — see ARCHITECTURE_PLAN.md M10.)*
+
+
 1. `dim_breeds.breed_id`: `unique`, `not_null`.
 2. `dim_breeds.size_class`: `accepted_values` = **the five seed labels + `'unknown'`**
    [toy, small, medium, large, giant, unknown]. The seed supplies the five; `unknown` is the

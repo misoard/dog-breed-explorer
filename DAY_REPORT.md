@@ -1004,7 +1004,7 @@ history and the Elementary trends, both of which accumulate in `md:dogs`. So the
 pattern: `raw` (partition append) and `main_elementary` (hook append) keep landing in `md:dogs` every
 run — a *failed* run still records itself there, which is observability working — and **only the gold
 marts**, which are full-replaced, get the shadow-schema swap. The cron builds gold into `main_marts_next`
-(a `marts_schema` dbt var), tests it, and `publish_motherduck.py` swaps it into live `main_marts` in one
+(a `marts_schema` dbt var), tests it, and `publish_gold.py` swaps it into live `main_marts` in one
 transaction, only on full green.
 
 ### Verify-first, because the mechanism was an unknown
@@ -1033,3 +1033,18 @@ path to the cloud is atomic, and `scheduled.yml` collapses to one "Run the pipel
 also caught a bug the first cut shipped: the `--vars` **array** form, empty on the local branch, is an
 "unbound variable" under `set -u` on **macOS's bash 3.2** — CI's bash 5.x tolerated it, so it passed CI
 but a local `./run_pipeline.sh` would have died. Two explicit build branches, no array, fixed both.
+
+### Second refinement — atomicity is really a property of the *prod target*, not the destination
+The "destination" framing above was one step short. I'd justified skipping WAP for a local file with
+"single writer, read-after-build" — but the local `dogs.duckdb` is **served live by Streamlit**, so a
+failed local prod build leaves exactly the torn/stale gold the dashboard reads, the same sin WAP fixes
+in the cloud. The distinction that actually matters isn't file-vs-`md:`, it's **prod (served) vs dev
+(scratch)**. So I moved the gate from `DBT_DUCKDB_PATH == md:*` to `DBT_TARGET == prod`: every prod
+build — the cron's `md:dogs`, the local demo, **and CI** — now builds gold into the shadow and swaps
+atomically; `--target dev` stays direct (the fast loop, nothing served). This was nearly free because
+the swap primitive was already proven atomic on local DuckDB back in Step 0, so it was a two-line gate
+change, not new machinery. A quiet bonus: **CI now exercises the atomic swap on every PR** instead of
+the path only ever running at 02:00. And I **renamed `publish_motherduck.py` → `publish_gold.py`** — it
+was never MotherDuck-specific (it swaps schemas in whatever DuckDB database it's handed); the old name
+was a leftover from when WAP was a cloud-only idea. Verified all three: local prod → shadow + swap, 627
+live, shadow dropped; dev → `main_marts` direct, no swap; `md:` → unchanged.

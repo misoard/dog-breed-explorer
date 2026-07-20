@@ -642,7 +642,7 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
           last *successful* publish, never a failed run. `dogs` untouched throughout.
     - [ ] **Step 5 — docs:** reconcile every `.md` except `DECISIONS.md` (yours) — the full list is the
           M10 docs-sync close-out item below.
-  - **Files:** `scripts/publish_motherduck.py` (new), `dbt/dbt_project.yml` (`marts_schema` var on the
+  - **Files:** `scripts/publish_gold.py` (new; renamed from `publish_motherduck.py`), `dbt/dbt_project.yml` (`marts_schema` var on the
     marts `+schema`), `.github/workflows/scheduled.yml` (Phase A build+test into the shadow schema →
     Phase B publish → heartbeat order), DECISIONS §2/§5/§6, SPEC (the shadow schema + swap), DAY_REPORT.
   - **Supersedes** the M9 "cron sets `DBT_DUCKDB_PATH=md:dogs` → build straight to cloud" step — that
@@ -656,6 +656,17 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
     bash 5.x tolerated it), so a local `./run_pipeline.sh` would have failed — replaced with two explicit
     build branches. Verified: local → `main_marts` direct, `PASS=82`, no swap; `md:` → shadow + swap,
     627 live.
+  - **Refined again (atomicity for ALL prod, not just cloud):** the gate moved from the **destination**
+    (`md:` path) to the **prod target** (`DBT_TARGET=prod`). The original "a local file is single-writer,
+    build direct" argument weakened once the local demo is **served live by Streamlit** — a failed local
+    prod build left torn/stale gold that the dashboard would read, the same sin WAP fixes for the cloud.
+    The swap primitive is DB-agnostic (already **verified atomic on local DuckDB** in Step 0), so the
+    change was ~two lines: `if [[ "$DBT_TARGET" == "prod" ]]` for both the shadow build and the publish.
+    Now **prod is atomic everywhere** — the cron's `md:dogs`, the local `dogs.duckdb` demo, and **CI,
+    which now exercises the swap on every PR** (previously the swap only ran nightly). **`--target dev`
+    stays DIRECT** (fast loop, nothing served). Also **renamed `publish_motherduck.py` → `publish_gold.py`**
+    (it was never MotherDuck-specific; it swaps in any DuckDB database). Verified: local prod → shadow +
+    swap, 627 live, shadow dropped; dev → `main_marts` direct, no swap; `md:` unchanged.
 
 - [x] **Docs sync — every `.md` except `DECISIONS.md` (that one is yours).** M10's close-out: reconcile
       the docs that describe the cron / gold-write path.
@@ -676,6 +687,17 @@ the ingestion). Schema details live in SPEC.md; reasoning in DECISIONS.md.
   - **DAY_REPORT.md** — the M10 narrative (the atomicity gap, WAP-in-cloud, the `md:` verification).
   - **No change:** `docs/dashboard_data_lineage.md` (the dashboard still reads `main_marts`; the shadow
     schema is a build-time detail invisible to the read path). **`DECISIONS.md` §2/§5/§6 — yours.**
+
+- [x] **TEST-ONLY chaos hooks — exercise the failure/warn paths on a REAL cron run.** Two var-gated
+      singular tests, `tests/debug_force_failure.sql` and `tests/debug_force_warn.sql`, each
+      `{{ config(enabled=var('force_test_*', false)) }}` so they are **disabled and unregistered on a
+      normal build** (count stays 39). The cron's `workflow_dispatch` exposes `force_test_failure` /
+      `force_test_warn` inputs (default false) → forwarded as env → `run_pipeline.sh` adds them to
+      `--vars` → the matching test enables and returns a row.
+      → **DONE + verified locally:** normal build `Found … 39 data tests`; `--vars force_test_failure=true`
+      → `40 data tests, ERROR=1` (build fails → swap skipped → `/fail` ping + Elementary status=fail);
+      `--vars force_test_warn=true` → `40 data tests, WARN=1, ERROR=0` (build green, publishes, warn shows
+      in observability, dead man does NOT fire). Off by default, so the nightly cron and CI are untouched.
 
 ---
 

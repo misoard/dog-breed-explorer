@@ -6,7 +6,7 @@ guiding principle throughout is **right-sizing** — the smallest stack that doe
 that I can fully explain, rather than the heaviest set of managed services. Since this is a data
 engineering study case, I've deliberately put most attention towards data reliability: clean and
 reliable data is the key to make all downstream tasks work. Therefore, I insisted on:
-- **the data pipeline**: the bronze to gold tables splitting.
+- **the data pipeline**: the bronze to gold tables splitting and the curated analytics layer.
 - **observability**: for me observability is crucial for data reliability. Without it there is no
   way to track failures over days.
 - **alert channel**: it was presented in the brief as an additional bonus feature, but for me it is
@@ -161,17 +161,10 @@ connection string), no model SQL touched.
 Dagster / Prefect. This is **one daily job**: standing up a managed orchestrator for a single
 scheduled task is operational overhead I can't justify. Actions cron runs it reliably and
 unattended. **Whether the last run passed or failed is answered at three levels (depending on where
-it failed).** At a glance: the run status (green/red + logs). Durably and with history: an
-**observability layer** built on the **Elementary** dbt package (the one allowed dependency, §3).
-Its automatic on-run-end hook records every test/run result — status, timing, the warn/error split
-for all 39 tests — into `main_elementary` tables, and **one command renders a health report** from
-them: `./scripts/observability_report.sh` reads the **local** `dogs_dev.duckdb` (my own builds),
-while `./scripts/observability_report.sh md:dogs` reads **MotherDuck** — the cron's cloud data — so
-I can check whether last night's scheduled pipeline went green and watch trends accumulate night
-over night (`raw.breeds` and the Elementary tables both persist there, §1/§2). It shows *which* test
-failed and *for how long*, not just that something did (`loaded_at` shows data freshness alongside).
-But looking is a pull, and the hardest failure to catch is a run that **never happened** or a
-failure **before** the dbt tests that Elementary cannot see — For the "never happened", GitHub cron
+it failed).**:
+- At a glance: the run status (green/red + logs).
+- a **dead man's switch** that wraps everything and solve the the hardest failure to catch: a
+  **never happened** cron. GitHub cron
 is best-effort and silently *drops* runs (and auto-disables a scheduled workflow after 60 days of
 repo inactivity), which the Actions page structurally cannot show, since it only lists runs that
 *started*. So the cron carries a **dead man's switch**: it pings Healthchecks.io on **start /
@@ -179,10 +172,21 @@ success / fail**, and the monitor alarms if the daily **success** ping doesn't a
 ping is **success-gated** on purpose — pinging unconditionally would let a failed run report "alive"
 and keep the monitor green while broken, a switch that lies. Grace is **wide** (4h), because GitHub
 cron is routinely 15-30 min late and I observed 3h delays for the cron. The ping URL is a secret
-(`HEALTHCHECKS_URL`), same discipline as `DOG_API_KEY` / `MOTHERDUCK_TOKEN`. **With more time:**
-Elementary's `edr monitor` to push a *specific failing test* (not just a failed run) to Slack, and
-Dagster only if the DAG outgrew a handful of steps or needed richer backfills — not before, and the
-difference is the whole point.
+(`HEALTHCHECKS_URL`), same discipline as `DOG_API_KEY` / `MOTHERDUCK_TOKEN`. Failures at ingest,
+from dbt tests and from the swap to MotherDuck (to guarantee atomicity) are all catched. Warns are
+still catched at the observability report layer.
+- an **observability layer** built on the **Elementary** dbt package (the one allowed dependency,
+  §3).
+Its automatic on-run-end hook records every test/run result — status, timing, the warn/error split
+for all 39 tests — into `main_elementary` tables, and **one command renders a health report** from
+them: `./scripts/observability_report.sh` reads the **local** `dogs_dev.duckdb` (my own builds),
+while `./scripts/observability_report.sh md:dogs` reads **MotherDuck** — the cron's cloud data — so
+I can check whether last night's scheduled pipeline went green and watch trends accumulate night
+over night (`raw.breeds` and the Elementary tables both persist there, §1/§2). It shows *which* test
+failed and *for how long*, not just that something did (`loaded_at` shows data freshness alongside).
+**With more time:** Elementary's `edr monitor` to push a *specific failing test* (not just a failed
+run) to Slack, and Dagster only if the DAG outgrew a handful of steps or needed richer backfills —
+not before, and the difference is the whole point.
 
 ## 7. Dashboard & visualization — Streamlit, thin, spec-first
 

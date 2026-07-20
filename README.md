@@ -77,11 +77,11 @@ local file, or MotherDuck — with no change to a line of model SQL.
   The cron writes MotherDuck; CI PR builds stay local, so a PR never clobbers served data.
   (The observability REPORT reads the separate main_elementary tables, not gold. See below.)
 
-  Atomic gold updates (Write-Audit-Publish): the cron builds gold into a SHADOW schema
-  (main_marts_next), runs all 39 tests there, and only on FULL success swaps it into live
-  main_marts in one transaction. A failed test never leaves torn/stale gold live, so the
-  dashboard's "Last refreshed" can't lie. raw + Elementary append every run (history/trends,
-  even on failure); only the gold marts get the atomic swap.
+  Atomic gold updates (Write-Audit-Publish): every PROD build (the cron, the local demo, CI)
+  builds gold into a SHADOW schema (main_marts_next), runs all 39 tests there, and only on FULL
+  success swaps it into live main_marts in one transaction. A failed test never leaves torn/stale
+  gold live, so the dashboard's "Last refreshed" can't lie. raw + Elementary append every run
+  (history/trends, even on failure); only the gold marts get the atomic swap. (dev builds direct.)
 ```
 
 | Layer | Choice | Why (one line) |
@@ -225,23 +225,24 @@ default path**:
   at (regenerable, not committed).
 - **Cloud serving — [MotherDuck](https://motherduck.com), with atomic gold updates.** The
   durable-storage unlock: point `DBT_DUCKDB_PATH` at `md:dogs` and the pipeline builds gold + Elementary
-  into hosted DuckDB that persists past the VM. **Writing gold to the cloud is atomic** (Write-Audit-Publish,
-  M10): `run_pipeline.sh` sees the `md:` destination, builds gold into a **shadow schema**, runs all 39
+  into hosted DuckDB that persists past the VM. **Every `prod` gold build is atomic** (Write-Audit-Publish,
+  M10): `run_pipeline.sh` sees `DBT_TARGET=prod`, builds gold into a **shadow schema**, runs all 39
   tests, and only on **full green** swaps it into live `main_marts` in one transaction — so a failed test
-  never leaves torn/stale gold live, and the dashboard's "Last refreshed" can't lie. A **local file**
-  builds gold **direct** (single writer, no swap needed). The dashboard reads `md:dogs` when
-  `DOGS_DB=md:dogs`, else the local file. **Zero model SQL changed** — only the connection string.
+  never leaves torn/stale gold live, and the dashboard's "Last refreshed" can't lie. The **same guard
+  protects every prod destination** (the cloud `md:dogs`, the live-read local `dogs.duckdb`, and CI on
+  every PR); **`--target dev` builds direct** (fast loop, nothing served). The dashboard reads `md:dogs`
+  when `DOGS_DB=md:dogs`, else the local file. **Zero model SQL changed** — only the connection string.
 
-**Commands** — the destination decides everything (a local *file* path builds direct; an `md:` path is atomic):
+**Commands** — the `prod` target is atomic on any destination (file or `md:`); only `dev` builds direct:
 
 ```bash
 # --- LOCAL demo (nothing touches the cloud) --------------------------------------
-./scripts/run_pipeline.sh                        # ingest -> build ./dogs.duckdb (gold direct into main_marts)
+./scripts/run_pipeline.sh                        # ingest -> build ./dogs.duckdb (prod: shadow -> test -> atomic swap)
 streamlit run dashboard/app.py                   # dashboard reads the local file (DOGS_DB unset)
 ./scripts/observability_report.sh ./dogs.duckdb  # test-health report from the local build
 
 # --- REFRESH the cloud (ATOMIC; the cron does this nightly) -----------------------
-# run_pipeline.sh self-loads .env for MOTHERDUCK_TOKEN; md: => shadow build -> test -> swap on green
+# run_pipeline.sh self-loads .env for MOTHERDUCK_TOKEN; prod => shadow build -> test -> swap on green
 DBT_DUCKDB_PATH=md:dogs ./scripts/run_pipeline.sh
 
 # --- READ the cloud --------------------------------------------------------------

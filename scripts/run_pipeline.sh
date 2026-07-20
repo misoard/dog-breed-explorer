@@ -109,28 +109,43 @@ python "$REPO_ROOT/ingestion/ingest.py" --db "$DBT_DUCKDB_PATH"
 #    deps." It's idempotent and fast when already installed (checks the lock), so
 #    running it every time costs nothing locally and is required in CI. One place,
 #    shared by all three callers — the same reason the pipeline lives in this script.
-# M10 (Write-Audit-Publish): atomicity is a property of the DESTINATION, not the caller. Writing gold
-# to the CLOUD store must be atomic — dbt materializes a model then tests it, so building straight into
-# md:dogs would leave torn/stale gold live on a failed test. So for an `md:` destination we build the
-# gold into a SHADOW schema (main_marts_next), test it, then swap it into live main_marts in ONE
-# transaction (stage 3, only on full green). A LOCAL file needs none of this (single writer,
-# read-after-build), so it builds straight into main_marts. This means `DBT_DUCKDB_PATH=md:dogs
-# ./run_pipeline.sh` is atomic whether it's the cron OR a hand-run demo refresh; CI/local (file paths)
-# are unchanged. Two explicit branches, NOT a `--vars` array: an empty array under `set -u` is an
-# "unbound variable" on macOS's bash 3.2, and the "{marts_schema: ...}" space must survive as one arg.
-echo "--- [2/2] dbt deps + build --target $DBT_TARGET"
+# M10 (Write-Audit-Publish): atomicity is a property of the PROD TARGET, not the destination. dbt
+# materializes a model THEN tests it, so building gold straight into live main_marts leaves torn/stale
+# gold on a failed test — true for a served md:dogs AND for the local dogs.duckdb the Streamlit demo
+# reads live. So for `--target prod` (local file OR md:) we build gold into a SHADOW schema
+# (main_marts_next), test it, then swap it into live main_marts in ONE transaction (stage 3, only on
+# full green). `--target dev` stays DIRECT — no shadow, no swap — because the dev loop wants speed, not
+# atomicity, and nothing serves dogs_dev.duckdb. So prod is atomic everywhere (the local demo, CI, and
+# the cron all get the guard; CI now also EXERCISES the swap on every PR), and `DBT_TARGET=prod
+# ./run_pipeline.sh` is atomic whether the path is a file or md:. A `--vars` STRING (not an array): an
+# empty array under `set -u` is an "unbound variable" on macOS's bash 3.2, and the "{...}" space must
+# survive as one arg. `if`-form, not `cond && x=y`, so a false condition can't trip `set -e`.
+#
+# Vars assembled from parts:
+#   - marts_schema: marts_next  -> on the prod target, build gold into the SHADOW schema (WAP).
+#   - force_test_failure / force_test_warn  -> TEST-ONLY chaos hooks. The cron's workflow_dispatch can
+#     set these to enable tests/debug_force_*.sql (disabled otherwise), to exercise the failure/warn
+#     paths at the real cron level (alert + observability). Empty on a normal run, so nothing changes.
+VARS=""
+if [[ "$DBT_TARGET" == "prod" ]]; then VARS="marts_schema: marts_next"; fi
+if [[ -n "${FORCE_TEST_FAILURE:-}" ]]; then VARS="${VARS:+$VARS, }force_test_failure: ${FORCE_TEST_FAILURE}"; fi
+if [[ -n "${FORCE_TEST_WARN:-}" ]];    then VARS="${VARS:+$VARS, }force_test_warn: ${FORCE_TEST_WARN}"; fi
+
+echo "--- [2/2] dbt deps + build --target $DBT_TARGET (vars: ${VARS:-none})"
 cd "$REPO_ROOT/dbt"
 dbt deps
-if [[ "$DBT_DUCKDB_PATH" == md:* ]]; then
-  dbt build --target "$DBT_TARGET" --vars "{marts_schema: marts_next}"   # cloud: gold -> shadow schema
+if [[ -n "$VARS" ]]; then
+  dbt build --target "$DBT_TARGET" --vars "{$VARS}"
 else
-  dbt build --target "$DBT_TARGET"                                        # local: gold -> main_marts direct
+  dbt build --target "$DBT_TARGET"
 fi
 
-# 3. Publish (CLOUD ONLY): atomically swap the validated shadow gold into live main_marts. A local
-#    build already wrote main_marts directly, so this is skipped. Any error here exits non-zero (set
-#    -e), which — in the cron — means no success heartbeat pings and the dead man's switch fires.
-if [[ "$DBT_DUCKDB_PATH" == md:* ]]; then
+# 3. Publish (PROD ONLY): atomically swap the validated shadow gold into live main_marts, in ONE
+#    transaction, whether the destination is a local file or md:. The swap primitive (transactional
+#    CREATE OR REPLACE) is DB-agnostic — verified atomic on both local DuckDB and MotherDuck. A dev
+#    build wrote main_marts directly and skips this. Any error here exits non-zero (set -e), which —
+#    in the cron — means no success heartbeat pings and the dead man's switch fires.
+if [[ "$DBT_TARGET" == "prod" ]]; then
   echo "--- [3/3] publish: atomic swap main_marts_next -> main_marts in $DBT_DUCKDB_PATH"
-  python "$REPO_ROOT/scripts/publish_motherduck.py" --database "$DBT_DUCKDB_PATH" --drop-shadow
+  python "$REPO_ROOT/scripts/publish_gold.py" --database "$DBT_DUCKDB_PATH" --drop-shadow
 fi
