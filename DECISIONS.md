@@ -15,7 +15,7 @@ reliable data is the key to make all downstream tasks work. Therefore, I insiste
 - **storage durability**: without over-engineering it, I wanted the scheduled cron to persist data
   because this is the first step for observability and durability.
 - **atomicity**: A dbt test that fails leaves a bad table in place and only skips downstream. We end
-  up with an intermediate state where some gold data can be updated and others are not. It must not be promoted to prod data. That's why I decided *for the prod path (CI, scheduled cron, local prod) * to run dbt tests on a shadow schema and then swap it to prod data on **full**
+  up with an intermediate state where some gold data can be updated and others are not. It must not be promoted to prod data. That's why I decided *for the prod path (CI, scheduled cron, local prod)* to run dbt tests on a shadow schema and then swap it to prod data on **full**
   success (WAP). This ensures that all gold data shown in the live dashboard pass **all tests**.
 I designed the architecture first organized in milestones and used Claude Code as the implementer
 against it, so every choice below is mine to defend. One paragraph per layer: what I chose, why over
@@ -68,7 +68,7 @@ package rather than modeled by us. It's metadata *about* the pipeline, deliberat
 bronze→silver→ gold contract; see §3 and "What I'd build next".)*
 
 **Staging is views, marts are tables**, set once per layer in `dbt_project.yml`: a view is the
-parser re-executed on read — free at 627 rows and *never stale* by construction — while marts are
+parser re-executed on read — free at 627 rows and *never stale* by construction with zero storage — while marts are
 read repeatedly by the dashboard, so they pay the parse once and are scanned many times. The rule
 and its crossover are explicit (flip to a table at scale when `reads × parse_cost > storage +
 rebuild_cost` - I tested it with x1000 rows and this is where going from view to table pays off),
