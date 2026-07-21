@@ -172,7 +172,7 @@ purpose so they don't drown the distinctive signal.
 Every chart states **its own** population: of 627 breeds, 625 have a weight, 587 a life span, 626 a
 temperament; the scatter plots the **585** with both. Coverage is uneven by class (toy 29/40 vs giant
 58/58), which the dashboard shows rather than hides. Reasoning behind these choices is in
-[`DECISIONS.md` §0](DECISIONS.md) and the panel contract in [`DASHBOARD.md`](DASHBOARD.md).
+[`DECISIONS.md`](DECISIONS.md) and the panel contract in [`DASHBOARD.md`](DASHBOARD.md).
 
 ---
 
@@ -185,14 +185,19 @@ dog-breed-explorer/
 │  ├─ models/staging/         # stg_breeds (the parser), stg_breed_temperaments
 │  ├─ models/marts/           # dim_breeds, the temperament bridge, 5 marts (+ contracts)
 │  ├─ seeds/                  # size_class_bands + dashboard_temperament_tags (the ONLY home of those constants)
+│  ├─ packages.yml            # Elementary (dbt-native observability); package-lock.yml pins it
 │  └─ tests/                  # custom SQL tests (return rows = fail)
 ├─ dashboard/app.py           # Streamlit; reads gold marts; thin
-├─ scripts/run_pipeline.sh    # the pipeline in one place (ingest -> dbt build); CI and local both call it
+├─ scripts/                   # one home per pipeline concern; CI and local both call these
+│  ├─ run_pipeline.sh         # the pipeline in one place: ingest → dbt build → atomic publish (prod)
+│  ├─ publish_gold.py         # M10 Write-Audit-Publish: atomic swap of the validated shadow gold
+│  └─ observability_report.sh # M9: generate the local Elementary test-health report
 ├─ .github/workflows/         # ci.yml (on PR) + scheduled.yml (cron)
 ├─ exploration/               # M0 profiling + a throwaway explorer (kept as evidence I looked first)
 ├─ DECISIONS.md               # the reasoning record  ← start here
 ├─ SPEC.md                    # schema, the parser, the 39 tests
 ├─ DASHBOARD.md               # the dashboard contract (panels, charts, honesty rules)
+├─ DAY_REPORT.md              # the build narrative, day by day (what broke, what I learned)
 └─ ARCHITECTURE_PLAN.md       # the milestone plan
 ```
 
