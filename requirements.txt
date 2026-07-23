@@ -5,8 +5,12 @@ requests~=2.32.3
 tenacity~=8.2.2
 python-dotenv~=1.0
 
-# Warehouse (also the dbt-duckdb backend)
-duckdb~=1.5.4
+# Warehouse (also the dbt-duckdb backend).
+# EXACT pin, not ~=: MotherDuck version-couples us to a supported DuckDB ceiling (currently 1.5.4).
+# `~=1.5.4` allows any 1.5.x patch, so when 1.5.5 shipped the fresh CI/cron VM installed it and the
+# md: extension refused to load ("not yet supported by MotherDuck"), failing the 2026-07-22 cron with
+# nothing changed on our side. Pin exactly and bump only when MotherDuck raises its supported version.
+duckdb==1.5.4
 
 # M2-M4 — transform / test / docs
 # Pinned to the minor actually built and tested against: `~=1.9` resolved to 1.12 at install
